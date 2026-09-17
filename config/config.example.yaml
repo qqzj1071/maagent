@@ -13,6 +13,10 @@ workflow:
   poll_interval: 10
   clean_start: true
 
+weekly:
+  enabled: true
+  use_potion_days: []          # 使用体力药的日子，周一=0 ... 周日=6
+
 adapters:
   maa:
     enabled: true

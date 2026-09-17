@@ -15,6 +15,7 @@ from maagent.control.logmonitor import (
 )
 from maagent.control.popup import MaaPopupMonitor, main_window
 from maagent.control.process import close_all
+from maagent.control.weekly import apply_weekly
 from maagent.notify.email import EmailNotifier
 from maagent.report.generator import RunReport
 
@@ -75,10 +76,16 @@ class Orchestrator:
         )
         logmon = MaaLogMonitor(hwnd)
 
-        logger.info("=== 步骤 3/6: 等待就绪并清理弹窗 ===")
+        logger.info("=== 步骤 3/7: 等待就绪并清理弹窗 ===")
         self._settle(monitor, wf.get("startup_settle_seconds", 25))
 
-        logger.info("=== 步骤 4/6: 触发 Link Start ===")
+        logger.info("=== 步骤 4/7: 周常 - 检查/设置「使用药剂」 ===")
+        try:
+            apply_weekly(self.config.get("weekly", {}))
+        except Exception as e:
+            logger.warning("周常处理异常: {}", e)
+
+        logger.info("=== 步骤 5/7: 触发 Link Start ===")
         if not self._ensure_daily_started(adapter, logmon, monitor, wf):
             report.status = "failed"
             report.errors.append("Link Start 后日常任务未成功开始")
@@ -87,7 +94,7 @@ class Orchestrator:
             return self._finish(report, started)
         logger.info("日常任务已开始运行")
 
-        logger.info("=== 步骤 5/6: 监控日志与弹窗，等待日常完成 ===")
+        logger.info("=== 步骤 6/7: 监控日志与弹窗，等待日常完成 ===")
         run_start = time.time()
         result = logmon.wait_idle(
             timeout=wf.get("daily_timeout_seconds", 3600),
@@ -179,7 +186,7 @@ class Orchestrator:
             report.next_deadline = compute_next_deadline(end_t, sanity[0], sanity[1])
 
     def _finish(self, report: RunReport, started: float) -> RunReport:
-        logger.info("=== 步骤 6/6: 生成报告并发送邮件 ===")
+        logger.info("=== 步骤 7/7: 生成报告并发送邮件 ===")
         if not report.finished_at:
             report.finished_at = _now()
         if not report.duration:
