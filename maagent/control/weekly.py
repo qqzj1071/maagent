@@ -7,7 +7,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-import win32con
 import win32gui
 from loguru import logger
 
@@ -15,6 +14,8 @@ from maagent.control.popup import (
     _click_screen,
     _force_foreground,
     capture_window,
+    ensure_visible,
+    find_text,
     main_window,
     recognize,
 )
@@ -31,8 +32,7 @@ PANEL_MIN_X = 300
 PANEL_MAX_X = 800
 CHECKED_MEAN = 80
 
-DEFAULT_WEEKLY_LIMIT = 5
-DEFAULT_SANITY_THRESHOLD = 124
+DEFAULT_ANNIHILATION_CAP = 1800
 DEFAULT_STATE_FILE = "logs/weekly_state.json"
 
 WEEKDAY_NAMES = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
@@ -41,23 +41,6 @@ WEEKDAY_NAMES = ["周一", "周二", "周三", "周四", "周五", "周六", "�
 # --------------------------------------------------------------------------- #
 # low level helpers
 # --------------------------------------------------------------------------- #
-def _find(items: list[Any], text: str) -> Any:
-    for item in items:
-        if text in item.text:
-            return item
-    return None
-
-
-def _ensure_visible(hwnd: int) -> None:
-    """Restore a minimized MAA window so PrintWindow capture works."""
-    try:
-        if win32gui.IsIconic(hwnd):
-            win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
-            time.sleep(1.0)
-    except Exception:
-        pass
-
-
 def _checkbox_state(image, cx: int, cy: int) -> bool:
     region = image.crop((cx - 9, cy - 9, cx + 9, cy + 9)).convert("L")
     data = region.tobytes()
@@ -67,7 +50,7 @@ def _checkbox_state(image, cx: int, cy: int) -> bool:
 def _potion_checkbox(image) -> tuple[bool | None, tuple[int, int] | None]:
     left_bound = max(0, PANEL_MIN_X - 20)
     crop = image.crop((left_bound, 0, PANEL_MAX_X + 20, image.height))
-    label = _find(recognize(crop), POTION_LABEL)
+    label = find_text(recognize(crop), POTION_LABEL)
     if label is None:
         return None, None
     left = min(point[0] for point in label.box) + left_bound
@@ -78,7 +61,7 @@ def _potion_checkbox(image) -> tuple[bool | None, tuple[int, int] | None]:
 
 def _task_checkbox(image, task_name: str) -> tuple[bool | None, tuple[int, int] | None]:
     crop = image.crop((0, 0, TASK_LIST_MAX_X + 40, image.height))
-    label = _find(recognize(crop), task_name)
+    label = find_text(recognize(crop), task_name)
     if label is None:
         return None, None
     cy = sum(point[1] for point in label.box) // 4
@@ -95,12 +78,12 @@ class MaaWeeklyPotion:
         self.gear_x = gear_x
 
     def open_fight_settings(self, hwnd: int) -> bool:
-        _ensure_visible(hwnd)
+        ensure_visible(hwnd)
         image = capture_window(hwnd)
         if image is None:
             logger.warning("周常：无法截取 MAA 窗口")
             return False
-        fight = _find(recognize(image.crop((0, 0, TASK_LIST_MAX_X + 40, image.height))), FIGHT_TASK)
+        fight = find_text(recognize(image.crop((0, 0, TASK_LIST_MAX_X + 40, image.height))), FIGHT_TASK)
         if fight is None:
             logger.warning("周常：未找到「{}」任务行", FIGHT_TASK)
             return False
@@ -160,7 +143,7 @@ class MaaTaskToggle:
         self, hwnd: int, task_name: str, enabled: bool, retries: int = 3
     ) -> tuple[bool, bool | None, bool | None]:
         """Return (ok, before, after)."""
-        _ensure_visible(hwnd)
+        ensure_visible(hwnd)
         _force_foreground(hwnd)
         time.sleep(0.8)
         before: bool | None = None
@@ -215,7 +198,7 @@ class WeeklyState:
         week = current_week_key()
         anni = self.data.get("annihilation") or {}
         if anni.get("week") != week:
-            anni = {"week": week, "runs": 0, "sanity": 0, "done": False}
+            anni = {"week": week, "progress": 0, "done": False}
             self.data["annihilation"] = anni
         return anni
 
@@ -231,18 +214,14 @@ class WeeklyState:
     def annihilation(self) -> dict[str, Any]:
         return self._anni()
 
-    def annihilation_done(self, weekly_limit: int = DEFAULT_WEEKLY_LIMIT,
-                          sanity_threshold: int = DEFAULT_SANITY_THRESHOLD) -> bool:
+    def annihilation_done(self, cap: int = DEFAULT_ANNIHILATION_CAP) -> bool:
         anni = self._anni()
-        return bool(anni.get("done")) or anni.get("runs", 0) >= weekly_limit \
-            or anni.get("sanity", 0) >= sanity_threshold
+        return bool(anni.get("done")) or anni.get("progress", 0) >= cap
 
-    def set_annihilation(self, runs: int, sanity: int, weekly_limit: int = DEFAULT_WEEKLY_LIMIT,
-                         sanity_threshold: int = DEFAULT_SANITY_THRESHOLD) -> dict[str, Any]:
+    def set_annihilation(self, progress: int, cap: int = DEFAULT_ANNIHILATION_CAP) -> dict[str, Any]:
         anni = self._anni()
-        anni["runs"] = max(anni.get("runs", 0), int(runs))
-        anni["sanity"] = max(anni.get("sanity", 0), int(sanity))
-        if anni["runs"] >= weekly_limit or anni["sanity"] >= sanity_threshold:
+        anni["progress"] = max(anni.get("progress", 0), int(progress))
+        if anni["progress"] >= cap:
             anni["done"] = True
         self._save()
         return anni
@@ -251,31 +230,17 @@ class WeeklyState:
 # --------------------------------------------------------------------------- #
 # log parsing
 # --------------------------------------------------------------------------- #
-def parse_annihilation(logs: list[str]) -> tuple[int, int]:
-    """Parse (runs, sanity) consumed by the 剿灭刷取 task from MAA panel log lines."""
-    runs = 0
-    sanity = 0
-    in_anni = False
+def parse_annihilation(logs: list[str]) -> int:
+    """Return the 剿灭模式 progress (out of the weekly cap) seen in MAA's panel log.
+
+    MAA prints a line like ``剿灭模式: 1800 / 1800`` once the weekly cap is reached.
+    """
+    progress = 0
     for line in logs:
-        if ANNIHILATION_TASK in line:
-            if "开始任务" in line:
-                in_anni = True
-                continue
-            if "完成任务" in line:
-                in_anni = False
-                continue
-        if not in_anni:
-            continue
-        m = re.search(r"开始行动\s*(\d+)\s*[~～\-]\s*(\d+)?\s*次", line)
+        m = re.search(r"剿灭\D{0,8}(\d+)\s*[／/]\s*(\d+)", line)
         if m:
-            runs += int(m.group(2) or m.group(1))
-            continue
-        m = re.search(r"-\s*(\d+)\s*理智", line)
-        if m:
-            sanity += int(m.group(1))
-    if sanity == 0 and runs > 0:
-        sanity = runs * 25
-    return runs, sanity
+            progress = max(progress, int(m.group(1)))
+    return progress
 
 
 # --------------------------------------------------------------------------- #
@@ -346,11 +311,10 @@ def _apply_annihilation(
     cfg = annihilation_config(weekly_cfg)
     item_enabled = bool(cfg.get("enabled", False))
     day = cfg.get("day")
-    weekly_limit = int(cfg.get("weekly_limit", DEFAULT_WEEKLY_LIMIT))
-    sanity_threshold = int(cfg.get("sanity_threshold", DEFAULT_SANITY_THRESHOLD))
+    cap = int(cfg.get("cap", DEFAULT_ANNIHILATION_CAP))
     now = datetime.now()
 
-    done = state.annihilation_done(weekly_limit, sanity_threshold) if state else False
+    done = state.annihilation_done(cap) if state else False
     is_day = today_runs_annihilation(weekly_cfg, now)
     desired = bool(item_enabled and day is not None and is_day and not done)
 
@@ -374,8 +338,7 @@ def _apply_annihilation(
     return {
         "item_enabled": item_enabled,
         "day": day,
-        "weekly_limit": weekly_limit,
-        "sanity_threshold": sanity_threshold,
+        "cap": cap,
         "done_before": done,
         "desired": desired,
         "before": before,

@@ -17,8 +17,10 @@ maagent/                 # Python package
   adapters/              # maa.py (active), maaend.py / bgi.py (stubs)
   control/
     process.py           # close MAA + MuMu emulator (MuMuManager)
-    popup.py             # window find / PrintWindow capture / OCR / dismiss
+    popup.py             # window find / PrintWindow capture / OCR / dismiss (+ find_text/ensure_visible)
     logmonitor.py        # OCR the MAA log panel, parse times/sanity/errors
+    weekly.py            # 周常: 使用药剂 toggle + 剿灭刷取 scheduling / progress
+    monthly.py           # 月常: 绿票/黄票商店 via 小工具→牛杂 OCR navigation
   core/orchestrator.py   # the --daily workflow
   report/generator.py    # concise report (start/end, errors, sanity, next deadline)
   notify/email.py        # SMTP (QQ) ; notify/wechat.py (stub)
@@ -49,8 +51,24 @@ dist/maagent.exe         # built artifact (gitignored)
 ```
 
 `--daily` flow: clean start (close MAA+emulator) → start MAA (MAA starts the
-emulator itself) → dismiss popups → click Link Start / ensure daily started →
-monitor log + popups → build report → send email.
+emulator itself) → dismiss popups → 周常 (药剂/剿灭) → 月常 (绿票/黄票商店) →
+click Link Start / ensure daily started → monitor log + popups → build report →
+send email.
+
+## 周常 / 月常 (MAA GUI automation)
+
+- 周常 (`weekly.py`) drives the **一键长草** tab: toggles 理智作战→使用药剂 and the
+  剿灭刷取 row's checkbox via OCR + screen clicks; progress in `logs/weekly_state.json`.
+- 剿灭 completion is the **`剿灭模式: X / 1800`** line in the panel log (parsed by
+  `parse_annihilation`, cap `weekly.annihilation.cap`, default 1800), not run count.
+  On the chosen day, if it isn't done the report warns with `⚠️` (red in HTML).
+- 月常 (`monthly.py`) drives **小工具 → 牛杂 → 绿票商店/黄票商店 → Link Start!**
+  (OCR-located labels). The 牛杂 tools run as `(自定任务)` and do **not** change the
+  bottom button state, so completion is detected from the panel log
+  (`开始任务` / `完成任务`), not `button_state()`. Progress in `logs/monthly_state.json`
+  (one purchase per calendar month).
+- OCR quirks: the button reads `LinkStart!` (no space); the tab reads `键长草`
+  (drops `一`). Match with candidate tuples, not exact strings.
 
 ## Config essentials (`config/config.yaml`)
 
@@ -71,6 +89,7 @@ monitor log + popups → build report → send email.
   see `emulator-5554`.
 - Detect "daily actually started" from the log (`连接成功` / `开始任务`), not the
   button state — the button also shows `running` during MAA's emulator startup.
+  `detect_started()` ignores `自定任务` lines so a 牛杂 run isn't mistaken for the daily.
 - When launching a GUI app to screenshot it, filter windows by **process name**,
   not just title (browser tabs can contain the same word).
 
@@ -118,7 +137,7 @@ git -c http.proxy=http://127.0.0.1:7897 -c https.proxy=http://127.0.0.1:7897 pus
 ## Verify before calling it done
 
 ```
-.venv\Scripts\python.exe -c "import maagent.main, maagent.core.orchestrator, maagent.control.popup, maagent.control.logmonitor, maagent.gui.app; print('OK')"
+.venv\Scripts\python.exe -c "import maagent.main, maagent.core.orchestrator, maagent.control.popup, maagent.control.logmonitor, maagent.control.weekly, maagent.control.monthly, maagent.gui.app; print('OK')"
 ```
 
 GUI smoke test: launch `dist\maagent.exe`, wait for a window titled

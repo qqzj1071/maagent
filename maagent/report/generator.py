@@ -21,6 +21,7 @@ class RunReport:
     sanity: str = ""
     next_deadline: str = ""
     annihilation: str = ""
+    monthly: str = ""
     logs: list[str] = field(default_factory=list)
     popups_closed: list[dict] = field(default_factory=list)
 
@@ -39,13 +40,24 @@ class RunReport:
         ]
         if self.annihilation:
             lines.append(f"剿灭作战: {self.annihilation}")
+        if self.monthly:
+            lines.append(f"月常购买: {self.monthly}")
         return "\n".join(lines)
 
     def to_html(self) -> str:
         err = "无" if not self.errors else "<br>".join(self.errors)
         color = {"success": "#2e7d32", "failed": "#c62828", "timeout": "#ef6c00"}.get(self.status, "#555")
-        anni_row = (
-            f'<tr><td><b>剿灭作战</b></td><td>{self.annihilation}</td></tr>' if self.annihilation else ""
+        if self.annihilation:
+            warn = self.annihilation.startswith("⚠️")
+            cell = (
+                f'<td style="color:#c62828;font-weight:600">{self.annihilation}</td>'
+                if warn else f"<td>{self.annihilation}</td>"
+            )
+            anni_row = f"<tr><td><b>剿灭作战</b></td>{cell}</tr>"
+        else:
+            anni_row = ""
+        monthly_row = (
+            f'<tr><td><b>月常购买</b></td><td>{self.monthly}</td></tr>' if self.monthly else ""
         )
         return f"""<html><body style="font-family:sans-serif;font-size:14px">
 <h3>【maagent 日常报告】{self.game} <span style="color:{color}">{self.status_label}</span></h3>
@@ -57,5 +69,6 @@ class RunReport:
 <tr><td><b>剩余理智</b></td><td>{self.sanity or '未知'}</td></tr>
 <tr><td><b>下次最晚开始</b></td><td>{self.next_deadline or '未知'}</td></tr>
 {anni_row}
+{monthly_row}
 </table>
 </body></html>"""

@@ -28,12 +28,14 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
+    QScrollArea,
     QSizePolicy,
     QToolButton,
     QVBoxLayout,
     QWidget,
 )
 
+from maagent.control.monthly import MonthlyState
 from maagent.control.process import close_all
 from maagent.control.weekly import WEEKDAY_NAMES, WeeklyState
 from maagent.core.orchestrator import Orchestrator
@@ -75,6 +77,14 @@ QPushButton#DayChip:hover { border-color: #a5b4fc; background: #f8faff; }
 QPushButton#DayChip:checked { background: #4f46e5; border-color: #4f46e5; color: #ffffff; font-weight: 600; }
 
 QPlainTextEdit { background: #fbfbfd; border: 1px solid #e5e7eb; border-radius: 8px; padding: 6px; color: #1f2328; }
+
+QScrollArea#WeeklyScroll { background: transparent; border: none; }
+QWidget#ScrollInner { background: transparent; }
+QScrollBar:vertical { background: transparent; width: 10px; margin: 0; }
+QScrollBar::handle:vertical { background: #d0d7de; border-radius: 5px; min-height: 30px; }
+QScrollBar::handle:vertical:hover { background: #a5b4fc; }
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
+QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: transparent; }
 
 QPushButton { background: #ffffff; border: 1px solid #d0d7de; border-radius: 8px; padding: 8px 16px; color: #1f2328; }
 QPushButton:hover { background: #f6f8fa; }
@@ -390,7 +400,8 @@ class MaAgentWindow(QMainWindow):
 
     def _build_ui(self) -> None:
         self.setWindowTitle("maagent - 二游日常助手")
-        self.resize(1150, 770)
+        self.resize(1152, 648)
+        self.setMinimumSize(1024, 576)
 
         central = QWidget()
         central.setObjectName("Central")
@@ -418,6 +429,20 @@ class MaAgentWindow(QMainWindow):
         left_col = QVBoxLayout()
         left_col.setSpacing(12)
 
+        scroll = QScrollArea()
+        scroll.setObjectName("WeeklyScroll")
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        scroll.viewport().setAutoFillBackground(False)
+        scroll_inner = QWidget()
+        scroll_inner.setObjectName("ScrollInner")
+        inner = QVBoxLayout(scroll_inner)
+        inner.setContentsMargins(0, 0, 8, 0)
+        inner.setSpacing(12)
+        scroll.setWidget(scroll_inner)
+
         weekly_panel = Panel("周常")
         potion_cfg = self.config.get("weekly", {}).get("potion") or {}
         potion_section = CollapsibleSection("体力药使用", enabled=bool(potion_cfg.get("enabled", False)))
@@ -442,7 +467,7 @@ class MaAgentWindow(QMainWindow):
         anni_cfg = self.config.get("weekly", {}).get("annihilation") or {}
         anni_section = CollapsibleSection("剿灭刷取", enabled=bool(anni_cfg.get("enabled", False)))
         self.anni_section = anni_section
-        anni_hint = QLabel("每周共 5 次剿灭。选择一个刷取日，其余日子会自动取消勾选「剿灭刷取」。")
+        anni_hint = QLabel("每周剿灭上限为剿灭模式 1800/1800。选择一个刷取日，其余日子会自动取消勾选「剿灭刷取」。")
         anni_hint.setObjectName("Hint")
         anni_hint.setWordWrap(True)
         anni_section.add_widget(anni_hint)
@@ -463,7 +488,33 @@ class MaAgentWindow(QMainWindow):
 
         weekly_panel.add_widget(potion_section)
         weekly_panel.add_widget(anni_section)
-        left_col.addWidget(weekly_panel)
+        inner.addWidget(weekly_panel)
+
+        monthly_panel = Panel("月常")
+        self.monthly_sections: dict[str, CollapsibleSection] = {}
+        self.monthly_status: dict[str, QLabel] = {}
+        monthly_cfg = self.config.get("monthly", {}) or {}
+        for key, title, hint in (
+            ("green", "绿票商店", "每月刷新后自动购买绿票商店物资，购买结果会写入任务报告。"),
+            ("yellow", "黄票商店", "每月刷新后自动购买黄票商店物资，购买结果会写入任务报告。"),
+        ):
+            item_cfg = monthly_cfg.get(key) or {}
+            section = CollapsibleSection(title, enabled=bool(item_cfg.get("enabled", False)))
+            hint_label = QLabel(hint)
+            hint_label.setObjectName("Hint")
+            hint_label.setWordWrap(True)
+            section.add_widget(hint_label)
+            status = QLabel()
+            status.setObjectName("Hint")
+            status.setWordWrap(True)
+            section.add_widget(status)
+            section.enable_switch.toggled.connect(self.on_weekly_changed)
+            self.monthly_sections[key] = section
+            self.monthly_status[key] = status
+            monthly_panel.add_widget(section)
+        inner.addWidget(monthly_panel)
+        inner.addStretch(1)
+        left_col.addWidget(scroll, 1)
 
         auto_row = QHBoxLayout()
         auto_row.setContentsMargins(4, 0, 4, 0)
@@ -481,10 +532,10 @@ class MaAgentWindow(QMainWindow):
         auto_row.addWidget(self.auto_close_switch)
         left_col.addLayout(auto_row)
 
-        left_col.addStretch(1)
         body.addLayout(left_col, 3)
         self.update_weekly_status()
         self.update_annihilation_status()
+        self.update_monthly_status()
 
         right_col = QVBoxLayout()
         right_col.setSpacing(12)
@@ -563,6 +614,7 @@ class MaAgentWindow(QMainWindow):
     def on_weekly_changed(self) -> None:
         self.update_weekly_status()
         self.update_annihilation_status()
+        self.update_monthly_status()
         self.save_timer.start()
 
     def selected_annihilation_day(self) -> int | None:
@@ -597,14 +649,31 @@ class MaAgentWindow(QMainWindow):
             cfg = weekly_cfg.get("annihilation") or {}
             state = WeeklyState(weekly_cfg.get("state_file", "logs/weekly_state.json"))
             anni = state.annihilation()
-            limit = int(cfg.get("weekly_limit", 5))
-            runs = int(anni.get("runs", 0))
-            sanity = int(anni.get("sanity", 0))
-            if anni.get("done"):
-                return f"已完成（{runs}/{limit} 次，{sanity} 理智）"
-            return f"{runs}/{limit} 次，{sanity} 理智"
+            cap = int(cfg.get("cap", 1800))
+            progress = int(anni.get("progress", 0))
+            if anni.get("done") or progress >= cap:
+                return f"已完成（剿灭模式 {progress}/{cap}）"
+            return f"剿灭模式 {progress}/{cap}"
         except Exception:
             return "未知"
+
+    def update_monthly_status(self) -> None:
+        monthly_cfg = self.config.get("monthly", {}) or {}
+        try:
+            state = MonthlyState(monthly_cfg.get("state_file", "logs/monthly_state.json"))
+        except Exception:
+            state = None
+        for key, label in (("green", "绿票商店"), ("yellow", "黄票商店")):
+            section = self.monthly_sections.get(key)
+            status = self.monthly_status.get(key)
+            if section is None or status is None:
+                continue
+            if not section.is_enabled():
+                status.setText(f"{label}：已停用 → 本月不购买")
+            elif state is not None and state.is_done(key):
+                status.setText(f"{label}：本月已完成购买")
+            else:
+                status.setText(f"{label}：本月尚未购买 → 下次任务自动购买")
 
     def on_option_changed(self) -> None:
         self.save_timer.start()
@@ -618,6 +687,11 @@ class MaAgentWindow(QMainWindow):
         anni = weekly.setdefault("annihilation", {})
         anni["enabled"] = self.anni_section.is_enabled()
         anni["day"] = self.selected_annihilation_day()
+        monthly = self.config.setdefault("monthly", {})
+        monthly["enabled"] = True
+        for key in ("green", "yellow"):
+            monthly.setdefault(key, {})["enabled"] = self.monthly_sections[key].is_enabled()
+        monthly.setdefault("state_file", "logs/monthly_state.json")
         workflow = self.config.setdefault("workflow", {})
         workflow["auto_close"] = self.auto_close_switch.isChecked()
         try:
@@ -625,11 +699,14 @@ class MaAgentWindow(QMainWindow):
             with open(target, "w", encoding="utf-8") as f:
                 yaml.safe_dump(self.config, f, allow_unicode=True, sort_keys=False)
             logger.info(
-                "周常设置已保存: 体力药刷取={} 使用日={} | 剿灭刷取={} 刷取日={} | 完成后自动关闭={}",
+                "设置已保存: 体力药刷取={} 使用日={} | 剿灭刷取={} 刷取日={} | "
+                "绿票商店={} 黄票商店={} | 完成后自动关闭={}",
                 potion["enabled"],
                 potion["days"],
                 anni["enabled"],
                 anni["day"],
+                monthly["green"]["enabled"],
+                monthly["yellow"]["enabled"],
                 workflow["auto_close"],
             )
         except Exception as e:

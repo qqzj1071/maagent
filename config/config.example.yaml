@@ -22,8 +22,16 @@ weekly:
   annihilation:                # 剿灭刷取
     enabled: false             # 条目启用；未启用则始终取消勾选「剿灭刷取」
     day: null                  # 刷取日（仅一天），周一=0 ... 周日=6
-    weekly_limit: 5            # 每周剿灭次数上限
-    sanity_threshold: 124      # 达标所需消耗理智
+    cap: 1800                  # 剿灭模式每周上限，达到即视为完成
+
+monthly:
+  enabled: true                # 月常总开关
+  green:                       # 绿票商店
+    enabled: false             # 启用后每月自动购买一次
+  yellow:                      # 黄票商店
+    enabled: false             # 启用后每月自动购买一次
+  state_file: logs/monthly_state.json
+  timeout_seconds: 900         # 单次购买任务超时
 
 adapters:
   maa:

@@ -125,7 +125,11 @@ class MaaLogMonitor:
         return any(any(k in ln for k in COMPLETE_KEYWORDS) for ln in self.logs)
 
     def detect_started(self) -> bool:
-        return any(any(k in ln for k in START_KEYWORDS) for ln in self.logs)
+        # ignore 牛杂 custom tasks (e.g. "开始任务: (自定任务)"), they are not the daily
+        return any(
+            any(k in ln for k in START_KEYWORDS) and "自定任务" not in ln
+            for ln in self.logs
+        )
 
     def detect_errors(self) -> list[str]:
         ignore = ["FPS", "补帧", "画面"]

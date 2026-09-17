@@ -225,6 +225,23 @@ def _find_checkbox(items: list[OcrItem]) -> OcrItem | None:
     return None
 
 
+def find_text(items: list[OcrItem], text: str) -> OcrItem | None:
+    for item in items:
+        if text in item.text:
+            return item
+    return None
+
+
+def ensure_visible(hwnd: int) -> None:
+    """Restore a minimized window so PrintWindow capture works."""
+    try:
+        if win32gui.IsIconic(hwnd):
+            win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
+            time.sleep(1.0)
+    except Exception:
+        pass
+
+
 def _force_foreground(hwnd: int) -> None:
     try:
         if win32gui.GetForegroundWindow() == hwnd:
