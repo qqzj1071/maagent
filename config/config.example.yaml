@@ -3,34 +3,38 @@ app:
   timezone: Asia/Shanghai
   log_dir: logs
 
+workflow:
+  game: "明日方舟"
+  window_timeout: 40
+  startup_settle_seconds: 25
+  start_timeout: 60
+  daily_timeout_seconds: 3600
+  min_runtime_seconds: 90
+  poll_interval: 10
+  clean_start: true
+
 adapters:
   maa:
     enabled: true
-    executable: "D:/path/to/maa-cli.exe"
-    config_dir: "D:/path/to/maa/config"
-  maaend:
-    enabled: false
-    executable: ""
-  bgi:
-    enabled: false
-    executable: ""
-
-schedule:
-  - name: "日常-明日方舟"
-    adapter: maa
-    cron: "0 4 * * *"
-  - name: "日常-碧蓝航线"
-    adapter: bgi
-    cron: "30 4 * * *"
+    path: "D:/MAA"
+    executable: "D:/MAA/MAA.exe"
+    wait_seconds: 10
+    emulator:
+      manager_path: "D:/tools/MuMuPlayer/nx_main/MuMuManager.exe"
+      vmindex: 0
+    popup_monitor:
+      interval: 2.0
+      dismiss_checkbox: false
+      debug_dir: "logs/popups"
 
 notify:
   email:
     enabled: false
-    smtp_host: smtp.example.com
+    smtp_host: "smtp.qq.com"
     smtp_port: 465
-    username: ""
+    username: "your@qq.com"
     password: ""
-    to: []
+    to: ["your@qq.com"]
   wechat:
-    enabled: true
-    webhook_url: "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=YOUR_KEY"
+    enabled: false
+    webhook_url: ""

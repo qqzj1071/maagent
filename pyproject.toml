@@ -16,7 +16,7 @@ dependencies = [
 
 [project.optional-dependencies]
 gui = ["PySide6>=6.6"]
-automation = ["pywin32>=306", "opencv-python>=4.8"]
+automation = ["pywin32>=306", "mss>=9.0", "psutil>=5.9", "rapidocr-onnxruntime>=1.3"]
 dev = ["pytest>=8.0"]
 
 [tool.hatch.build.targets.wheel]

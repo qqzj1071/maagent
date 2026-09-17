@@ -1,6 +1,72 @@
-def main() -> None:
-    raise NotImplementedError
+import argparse
+import sys
+from pathlib import Path
+
+import yaml
+from loguru import logger
+
+from gameops.adapters.maa import MaaAdapter
+from gameops.control.popup import MaaPopupMonitor
+from gameops.control.process import close_all
+from gameops.core.orchestrator import Orchestrator
+from gameops.log.logger import setup_logger
+
+
+def load_config(path: str) -> dict:
+    with open(path, "r", encoding="utf-8") as f:
+        return yaml.safe_load(f)
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="GameOps - 二游日常助手")
+    parser.add_argument("--config", default=None, help="config.yaml 路径")
+    parser.add_argument("--daily", action="store_true", help="完整工作流：启动→关弹窗→LinkStart→监控→报告→邮件")
+    parser.add_argument("--run", action="store_true", help="仅启动 MAA 并触发 Link Start")
+    parser.add_argument("--launch", action="store_true", help="仅启动 MAA，不触发 Link Start")
+    parser.add_argument("--monitor", action="store_true", help="监控并自动关闭 MAA 弹窗")
+    parser.add_argument("--close", action="store_true", help="关闭 MAA 与模拟器")
+    parser.add_argument("--seconds", type=float, default=60, help="监控时长（秒）")
+    args = parser.parse_args(argv)
+
+    default_config = Path(__file__).resolve().parent.parent / "config" / "config.yaml"
+    config_path = args.config or str(default_config)
+    cfg = load_config(config_path)
+    setup_logger(log_dir=cfg.get("app", {}).get("log_dir", "logs"))
+    logger.info("已加载配置 {}", config_path)
+
+    maa_cfg = cfg["adapters"]["maa"]
+
+    if args.close:
+        close_all(maa_cfg.get("emulator", {}))
+        return 0
+
+    if args.daily:
+        report = Orchestrator(cfg).run_daily()
+        logger.info("工作流结束，状态: {}", report.status_label)
+        return 0 if report.status == "success" else 1
+
+    if args.run or args.launch:
+        adapter = MaaAdapter()
+        adapter.start(maa_cfg)
+        if args.run:
+            result = adapter.run({"name": "明日方舟日常"})
+            logger.info("执行结果: {} - {}", result.status, result.message)
+        else:
+            logger.info("启动结果: {}", adapter.launch())
+
+    if args.monitor:
+        pm_cfg = maa_cfg.get("popup_monitor", {})
+        monitor = MaaPopupMonitor(
+            debug_dir=pm_cfg.get("debug_dir"),
+            dismiss_checkbox=pm_cfg.get("dismiss_checkbox", False),
+        )
+        closed = monitor.monitor(args.seconds, interval=pm_cfg.get("interval", 2.0))
+        logger.info("共关闭弹窗 {} 个: {}", len(closed), closed)
+
+    if not (args.daily or args.run or args.launch or args.monitor):
+        parser.print_help()
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
