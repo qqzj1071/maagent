@@ -137,14 +137,17 @@ class MaaToolNavigator:
         logmon.collect_logs()
         baseline = len(logmon.logs)
 
-        if not self._click_label(hwnd, BUTTON_REGION, LINK_START_OCR):
-            return "failed"
-        logger.info("月常：已启动「{}」购买任务", store_name)
-
-        if not self._wait_started(logmon, start_timeout, baseline, on_poll):
-            logger.warning("月常：「{}」任务未能启动", store_name)
-            return "failed"
-        return self._wait_done(logmon, timeout, interval, baseline, on_poll, store_name)
+        for attempt in range(1, 4):
+            if not self._click_label(hwnd, BUTTON_REGION, LINK_START_OCR):
+                return "failed"
+            logger.info("月常：已启动「{}」购买任务（第 {} 次）", store_name, attempt)
+            if self._wait_started(logmon, start_timeout, baseline, on_poll):
+                return self._wait_done(logmon, timeout, interval, baseline, on_poll, store_name)
+            logger.warning("月常：「{}」点击 Link Start 后任务未启动，重试", store_name)
+            hwnd = self._hwnd() or hwnd
+            time.sleep(2.0)
+        logger.warning("月常：「{}」任务未能启动", store_name)
+        return "failed"
 
     @staticmethod
     def _new_lines(logmon: MaaLogMonitor, baseline: int) -> list[str]:

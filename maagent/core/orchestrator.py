@@ -1,20 +1,32 @@
 from __future__ import annotations
 
+import threading
 import time
 from datetime import datetime
 from typing import Any
 
+import win32gui
 from loguru import logger
 
 from maagent.adapters.maa import MaaAdapter
 from maagent.control.logmonitor import (
+    BUTTON_REGION,
     MaaLogMonitor,
     compute_next_deadline,
     parse_sanity,
     parse_times,
 )
 from maagent.control.monthly import MonthlyState, apply_monthly, format_monthly
-from maagent.control.popup import MaaPopupMonitor, main_window
+from maagent.control.popup import (
+    MaaPopupMonitor,
+    _click_screen,
+    _force_foreground,
+    capture_window,
+    ensure_visible,
+    find_text,
+    main_window,
+    recognize,
+)
 from maagent.control.process import close_all
 from maagent.control.weekly import (
     ANNIHILATION_TASK,
@@ -50,21 +62,88 @@ def _fmt_duration(seconds: float) -> str:
     return f"{s} 秒"
 
 
+class WorkflowStopped(Exception):
+    """Raised when the user requests an emergency stop."""
+
+
 class Orchestrator:
-    def __init__(self, config: dict[str, Any]) -> None:
+    def __init__(
+        self, config: dict[str, Any], stop_event: threading.Event | None = None
+    ) -> None:
         self.config = config
+        self._stop = stop_event
+        self._monitor: MaaPopupMonitor | None = None
+        self._logmon: MaaLogMonitor | None = None
         weekly_cfg = config.get("weekly", {}) or {}
         self.weekly_state = WeeklyState(weekly_cfg.get("state_file", "logs/weekly_state.json"))
         monthly_cfg = config.get("monthly", {}) or {}
         self.monthly_state = MonthlyState(monthly_cfg.get("state_file", "logs/monthly_state.json"))
 
+    def _check_stop(self) -> None:
+        if self._stop is not None and self._stop.is_set():
+            raise WorkflowStopped()
+
+    def _stop_maa_task(self) -> None:
+        """Emergency stop: click MAA's 停止 button to abort the running daily."""
+        try:
+            hwnd = main_window()
+            if hwnd is None:
+                logger.warning("急停：未找到 MAA 主窗口，无法停止其任务")
+                return
+            ensure_visible(hwnd)
+            _force_foreground(hwnd)
+            time.sleep(0.6)
+            image = capture_window(hwnd)
+            if image is None:
+                logger.warning("急停：无法截取 MAA 窗口")
+                return
+            w, h = image.size
+            l, t, r, b = (
+                int(BUTTON_REGION[0] * w), int(BUTTON_REGION[1] * h),
+                int(BUTTON_REGION[2] * w), int(BUTTON_REGION[3] * h),
+            )
+            items = recognize(image.crop((l, t, r, b)))
+            item = None
+            for name in ("停止", "中止"):
+                item = find_text(items, name)
+                if item is not None:
+                    break
+            if item is None:
+                logger.info("急停：MAA 未显示「停止」按钮，任务可能已结束")
+                return
+            wx, wy, _, _ = win32gui.GetWindowRect(hwnd)
+            _click_screen(wx + l + item.center[0], wy + t + item.center[1])
+            logger.info("急停：已点击 MAA 的「停止」按钮，日常任务已终止")
+            time.sleep(1.5)
+            if self._monitor is not None:
+                self._monitor.scan_once()
+        except Exception as e:
+            logger.warning("急停：停止 MAA 任务失败: {}", e)
+
     def run_daily(self) -> RunReport:
+        started = time.time()
+        try:
+            return self._run_daily(started)
+        except WorkflowStopped:
+            logger.warning("收到急停请求，已中止工作流")
+            wf = self.config.get("workflow", {})
+            report = RunReport(game=wf.get("game", "明日方舟"), started_at=_now())
+            report.status = "stopped"
+            report.finished_at = _now()
+            report.duration = _fmt_duration(time.time() - started)
+            report.errors.append("用户急停，工作流已中止")
+            if self._logmon is not None:
+                report.logs = self._logmon.logs
+                self._populate_from_logs(report)
+            self._stop_maa_task()
+            return self._finish(report, started, auto_close=False)
+
+    def _run_daily(self, started: float) -> RunReport:
         maa_cfg = self.config["adapters"]["maa"]
         pm_cfg = maa_cfg.get("popup_monitor", {})
         emu_cfg = maa_cfg.get("emulator", {})
         wf = self.config.get("workflow", {})
         report = RunReport(game=wf.get("game", "明日方舟"), started_at=_now())
-        started = time.time()
 
         logger.info("=== 步骤 1/8: 清理残留 MAA 与模拟器 ===")
         if wf.get("clean_start"):
@@ -89,6 +168,8 @@ class Orchestrator:
             dismiss_checkbox=pm_cfg.get("dismiss_checkbox", False),
         )
         logmon = MaaLogMonitor(hwnd)
+        self._monitor = monitor
+        self._logmon = logmon
 
         logger.info("=== 步骤 3/8: 等待就绪并清理弹窗 ===")
         self._settle(monitor, wf.get("startup_settle_seconds", 25))
@@ -99,18 +180,7 @@ class Orchestrator:
         except Exception as e:
             logger.warning("周常处理异常: {}", e)
 
-        logger.info("=== 步骤 5/8: 月常 - 绿票 / 黄票商店 ===")
-        try:
-            monthly_result = apply_monthly(
-                self.config.get("monthly", {}),
-                state=self.monthly_state,
-                on_poll=monitor.scan_once,
-            )
-            report.monthly = format_monthly(monthly_result)
-        except Exception as e:
-            logger.warning("月常处理异常: {}", e)
-
-        logger.info("=== 步骤 6/8: 触发 Link Start ===")
+        logger.info("=== 步骤 5/8: 触发 Link Start ===")
         if not self._ensure_daily_started(adapter, logmon, monitor, wf):
             report.status = "failed"
             report.errors.append("Link Start 后日常任务未成功开始")
@@ -119,10 +189,11 @@ class Orchestrator:
             return self._finish(report, started)
         logger.info("日常任务已开始运行")
 
-        logger.info("=== 步骤 7/8: 监控日志与弹窗，等待日常完成 ===")
+        logger.info("=== 步骤 6/8: 监控日志与弹窗，等待日常完成 ===")
         run_start = time.time()
 
         def _poll() -> None:
+            self._check_stop()
             monitor.scan_once()
             self._check_annihilation(logmon, hwnd)
 
@@ -151,6 +222,17 @@ class Orchestrator:
             )
         else:
             report.status = "success"
+
+        logger.info("=== 步骤 7/8: 月常 - 绿票 / 黄票商店（模拟器保持开启）===")
+        try:
+            monthly_result = apply_monthly(
+                self.config.get("monthly", {}),
+                state=self.monthly_state,
+                on_poll=monitor.scan_once,
+            )
+            report.monthly = format_monthly(monthly_result)
+        except Exception as e:
+            logger.warning("月常处理异常: {}", e)
 
         return self._finish(report, started)
 
@@ -213,11 +295,13 @@ class Orchestrator:
             logmon.wait_idle(timeout=wf.get("emulator_wait_timeout", 180), interval=3.0)
 
         for attempt in range(1, 4):
+            self._check_stop()
             monitor.scan_once()
             logger.info("触发 Link Start（第 {} 次）", attempt)
             adapter.press_link_start()
             deadline = time.time() + wf.get("start_timeout", 90)
             while time.time() < deadline:
+                self._check_stop()
                 monitor.scan_once()
                 logmon.collect_logs()
                 if logmon.detect_started():
@@ -232,6 +316,7 @@ class Orchestrator:
         logger.info("等待 MAA 就绪并清理弹窗（约 {} 秒）...", seconds)
         deadline = time.time() + seconds
         while time.time() < deadline:
+            self._check_stop()
             monitor.scan_once()
             time.sleep(2.0)
 
@@ -258,7 +343,9 @@ class Orchestrator:
             report.sanity = f"{sanity[0]}/{sanity[1]}"
             report.next_deadline = compute_next_deadline(end_t, sanity[0], sanity[1])
 
-    def _finish(self, report: RunReport, started: float) -> RunReport:
+    def _finish(
+        self, report: RunReport, started: float, auto_close: bool = True
+    ) -> RunReport:
         logger.info("=== 步骤 8/8: 生成报告并发送邮件 ===")
         if not report.finished_at:
             report.finished_at = _now()
@@ -272,7 +359,7 @@ class Orchestrator:
 
         logger.info("报告:\n{}", report.to_text())
 
-        if self.config.get("workflow", {}).get("auto_close"):
+        if auto_close and self.config.get("workflow", {}).get("auto_close"):
             logger.info("任务完成，自动关闭 MAA 与模拟器")
             try:
                 close_all(self.config.get("adapters", {}).get("maa", {}).get("emulator", {}))

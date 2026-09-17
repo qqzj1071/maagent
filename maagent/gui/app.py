@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import subprocess
 import sys
+import threading
 from datetime import datetime
 from pathlib import Path
 
@@ -58,9 +59,9 @@ QFrame#Card { background: #ffffff; border: 1px solid #e5e7eb; border-radius: 10p
 QFrame#Card:hover { border-color: #c7d2fe; background: #f8faff; }
 QFrame#Card[selected="true"] { border: 2px solid #4f46e5; background: #eef2ff; }
 QFrame#Card[enabled="false"] { background: #fafafa; border-color: #eceff3; }
-QLabel#CardName { font-size: 16px; font-weight: 700; color: #111827; }
-QLabel#CardDesc { font-size: 13px; color: #6b7280; }
-QLabel#CardState { font-size: 12px; }
+QLabel#CardName { font-size: 15px; font-weight: 700; color: #111827; }
+QLabel#CardDesc { font-size: 12px; color: #6b7280; }
+QLabel#CardState { font-size: 11px; }
 
 QFrame#Panel { background: #ffffff; border: 1px solid #e5e7eb; border-radius: 10px; }
 QLabel#PanelTitle { color: #374151; font-size: 14px; font-weight: 600; }
@@ -93,6 +94,9 @@ QPushButton:disabled { color: #9ca3af; background: #f6f7f9; }
 QPushButton#Primary { background: #4f46e5; border-color: #4f46e5; color: #ffffff; font-weight: 600; }
 QPushButton#Primary:hover { background: #4338ca; }
 QPushButton#Primary:disabled { background: #c7cbf5; border-color: #c7cbf5; color: #ffffff; }
+QPushButton#Danger { background: #dc2626; border-color: #dc2626; color: #ffffff; font-weight: 600; }
+QPushButton#Danger:hover { background: #b91c1c; }
+QPushButton#Danger:disabled { background: #f0a3a3; border-color: #f0a3a3; color: #ffffff; }
 QPushButton#Ghost { background: transparent; border: none; color: #6b7280; padding: 4px 10px; border-radius: 6px; font-size: 13px; }
 QPushButton#Ghost:hover { background: #f3f4f6; color: #4f46e5; }
 """
@@ -145,12 +149,12 @@ class SoftwareCard(QFrame):
         self._enabled = enabled
         self._selected = False
         self.setObjectName("Card")
-        self.setFixedSize(190, 112)
+        self.setFixedSize(164, 88)
         self.setCursor(Qt.PointingHandCursor)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(14, 12, 14, 12)
-        layout.setSpacing(4)
+        layout.setContentsMargins(12, 9, 12, 9)
+        layout.setSpacing(2)
 
         top = QHBoxLayout()
         top.setSpacing(6)
@@ -275,8 +279,8 @@ class CollapsibleSection(QWidget):
         self.header.setObjectName("SectionHeader")
         self.header.setText(title)
         self.header.setCheckable(True)
-        self.header.setChecked(True)
-        self.header.setArrowType(Qt.DownArrow)
+        self.header.setChecked(False)
+        self.header.setArrowType(Qt.RightArrow)
         self.header.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
         self.header.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.header.setCursor(Qt.PointingHandCursor)
@@ -294,6 +298,7 @@ class CollapsibleSection(QWidget):
         self.body_layout = QVBoxLayout(self.body)
         self.body_layout.setContentsMargins(20, 0, 0, 4)
         self.body_layout.setSpacing(8)
+        self.body.setVisible(False)
         layout.addWidget(self.body)
 
     def is_enabled(self) -> bool:
@@ -343,13 +348,14 @@ class DailyWorker(QThread):
     status = Signal(str)
     finished_report = Signal(object)
 
-    def __init__(self, config: dict) -> None:
+    def __init__(self, config: dict, stop_event: threading.Event | None = None) -> None:
         super().__init__()
         self.config = config
+        self.stop_event = stop_event
 
     def run(self) -> None:
         try:
-            report = Orchestrator(self.config).run_daily()
+            report = Orchestrator(self.config, stop_event=self.stop_event).run_daily()
             self.finished_report.emit(report)
         except Exception as e:
             logger.exception("工作流异常: {}", e)
@@ -363,6 +369,7 @@ class MaAgentWindow(QMainWindow):
         self.config_path = config_path
         self.bridge = bridge
         self.worker: DailyWorker | None = None
+        self.stop_event: threading.Event | None = None
         self.cards: dict[str, SoftwareCard] = {}
         self.selected_software: str | None = None
         self.save_timer = QTimer(self)
@@ -400,8 +407,8 @@ class MaAgentWindow(QMainWindow):
 
     def _build_ui(self) -> None:
         self.setWindowTitle("maagent - 二游日常助手")
-        self.resize(1152, 648)
-        self.setMinimumSize(1024, 576)
+        self.resize(1079, 667)
+        self.setMinimumSize(940, 580)
 
         central = QWidget()
         central.setObjectName("Central")
@@ -414,7 +421,7 @@ class MaAgentWindow(QMainWindow):
         layout.addWidget(section)
 
         card_row = QHBoxLayout()
-        card_row.setSpacing(12)
+        card_row.setSpacing(10)
         for key, name, desc, enabled in self._software_defs():
             card = SoftwareCard(key, name, desc, enabled)
             card.clicked.connect(self.select_software)
@@ -532,7 +539,7 @@ class MaAgentWindow(QMainWindow):
         auto_row.addWidget(self.auto_close_switch)
         left_col.addLayout(auto_row)
 
-        body.addLayout(left_col, 3)
+        body.addLayout(left_col, 7)
         self.update_weekly_status()
         self.update_annihilation_status()
         self.update_monthly_status()
@@ -564,7 +571,7 @@ class MaAgentWindow(QMainWindow):
         report_panel.add_action(btn_copy)
         right_col.addWidget(report_panel, 2)
 
-        body.addLayout(right_col, 2)
+        body.addLayout(right_col, 3)
         layout.addLayout(body, 1)
 
         bottom = QHBoxLayout()
@@ -723,15 +730,33 @@ class MaAgentWindow(QMainWindow):
 
     def start_daily(self) -> None:
         if self.worker and self.worker.isRunning():
+            self.request_stop()
             return
-        self.btn_start.setEnabled(False)
+        self.stop_event = threading.Event()
+        self.btn_start.setEnabled(True)
+        self.btn_start.setText("急停")
+        self._set_button_role(self.btn_start, "Danger")
         self.status_label.setText("状态: 运行中...")
         self.report_view.clear()
-        self.worker = DailyWorker(self.config)
+        self.worker = DailyWorker(self.config, self.stop_event)
         self.worker.status.connect(self.status_label.setText)
         self.worker.finished_report.connect(self.on_report)
         self.worker.finished.connect(self.on_worker_finished)
         self.worker.start()
+
+    def request_stop(self) -> None:
+        if self.stop_event is not None:
+            self.stop_event.set()
+        self.btn_start.setEnabled(False)
+        self.btn_start.setText("停止中...")
+        self.status_label.setText("状态: 正在急停...")
+        logger.warning("已请求急停，正在中止当前工作流")
+
+    @staticmethod
+    def _set_button_role(button: QPushButton, role: str) -> None:
+        button.setObjectName(role)
+        button.style().unpolish(button)
+        button.style().polish(button)
 
     def on_report(self, report) -> None:
         self.report_view.setPlainText(report.to_text())
@@ -745,7 +770,10 @@ class MaAgentWindow(QMainWindow):
         logger.info("报告已复制到剪贴板")
 
     def on_worker_finished(self) -> None:
+        self.stop_event = None
         self.btn_start.setEnabled(True)
+        self.btn_start.setText("开始日常")
+        self._set_button_role(self.btn_start, "Primary")
         self.status_label.setText("状态: 空闲")
 
     def do_close_all(self) -> None:

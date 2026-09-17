@@ -6,6 +6,7 @@ STATUS_LABEL = {
     "success": "✅ 成功",
     "failed": "❌ 失败",
     "timeout": "⏱️ 超时",
+    "stopped": "⏹️ 已急停",
     "unknown": "❓ 未知",
 }
 
@@ -46,7 +47,10 @@ class RunReport:
 
     def to_html(self) -> str:
         err = "无" if not self.errors else "<br>".join(self.errors)
-        color = {"success": "#2e7d32", "failed": "#c62828", "timeout": "#ef6c00"}.get(self.status, "#555")
+        color = {
+            "success": "#2e7d32", "failed": "#c62828",
+            "timeout": "#ef6c00", "stopped": "#6b7280",
+        }.get(self.status, "#555")
         if self.annihilation:
             warn = self.annihilation.startswith("⚠️")
             cell = (
