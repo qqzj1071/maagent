@@ -12,10 +12,18 @@ workflow:
   min_runtime_seconds: 90
   poll_interval: 10
   clean_start: true
+  auto_close: false            # 任务完成并发送报告后，自动关闭 MAA 与模拟器
 
 weekly:
-  enabled: true
-  use_potion_days: []          # 使用体力药的日子，周一=0 ... 周日=6
+  enabled: true                # 周常总开关
+  potion:                      # 体力药刷取
+    enabled: true              # 条目启用；未启用则始终关闭「使用药剂」
+    days: []                   # 使用体力药的日子，周一=0 ... 周日=6
+  annihilation:                # 剿灭刷取
+    enabled: false             # 条目启用；未启用则始终取消勾选「剿灭刷取」
+    day: null                  # 刷取日（仅一天），周一=0 ... 周日=6
+    weekly_limit: 5            # 每周剿灭次数上限
+    sanity_threshold: 124      # 达标所需消耗理智
 
 adapters:
   maa:

@@ -20,6 +20,7 @@ class RunReport:
     errors: list[str] = field(default_factory=list)
     sanity: str = ""
     next_deadline: str = ""
+    annihilation: str = ""
     logs: list[str] = field(default_factory=list)
     popups_closed: list[dict] = field(default_factory=list)
 
@@ -29,17 +30,23 @@ class RunReport:
 
     def to_text(self) -> str:
         err = "无" if not self.errors else "；".join(self.errors)
-        return "\n".join([
+        lines = [
             f"【maagent 日常报告】{self.game}（{self.status_label}）",
             f"开始: {self.started_at or '未知'}    结束: {self.finished_at or '未知'}    耗时: {self.duration or '未知'}",
             f"报错: {err}",
             f"剩余理智: {self.sanity or '未知'}",
             f"下次任务最晚开始: {self.next_deadline or '未知'}",
-        ])
+        ]
+        if self.annihilation:
+            lines.append(f"剿灭作战: {self.annihilation}")
+        return "\n".join(lines)
 
     def to_html(self) -> str:
         err = "无" if not self.errors else "<br>".join(self.errors)
         color = {"success": "#2e7d32", "failed": "#c62828", "timeout": "#ef6c00"}.get(self.status, "#555")
+        anni_row = (
+            f'<tr><td><b>剿灭作战</b></td><td>{self.annihilation}</td></tr>' if self.annihilation else ""
+        )
         return f"""<html><body style="font-family:sans-serif;font-size:14px">
 <h3>【maagent 日常报告】{self.game} <span style="color:{color}">{self.status_label}</span></h3>
 <table cellpadding="4" style="border-collapse:collapse">
@@ -49,5 +56,6 @@ class RunReport:
 <tr><td><b>报错</b></td><td>{err}</td></tr>
 <tr><td><b>剩余理智</b></td><td>{self.sanity or '未知'}</td></tr>
 <tr><td><b>下次最晚开始</b></td><td>{self.next_deadline or '未知'}</td></tr>
+{anni_row}
 </table>
 </body></html>"""

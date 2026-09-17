@@ -15,7 +15,14 @@ from maagent.control.logmonitor import (
 )
 from maagent.control.popup import MaaPopupMonitor, main_window
 from maagent.control.process import close_all
-from maagent.control.weekly import apply_weekly
+from maagent.control.weekly import (
+    ANNIHILATION_TASK,
+    MaaTaskToggle,
+    WeeklyState,
+    annihilation_config,
+    apply_weekly,
+    parse_annihilation,
+)
 from maagent.notify.email import EmailNotifier
 from maagent.report.generator import RunReport
 
@@ -43,6 +50,10 @@ def _fmt_duration(seconds: float) -> str:
 class Orchestrator:
     def __init__(self, config: dict[str, Any]) -> None:
         self.config = config
+        weekly_cfg = config.get("weekly", {}) or {}
+        self.weekly_state = WeeklyState(weekly_cfg.get("state_file", "logs/weekly_state.json"))
+        self._anni_base_runs = 0
+        self._anni_base_sanity = 0
 
     def run_daily(self) -> RunReport:
         maa_cfg = self.config["adapters"]["maa"]
@@ -52,11 +63,11 @@ class Orchestrator:
         report = RunReport(game=wf.get("game", "明日方舟"), started_at=_now())
         started = time.time()
 
-        logger.info("=== 步骤 1/6: 清理残留 MAA 与模拟器 ===")
+        logger.info("=== 步骤 1/7: 清理残留 MAA 与模拟器 ===")
         if wf.get("clean_start"):
             close_all(emu_cfg)
 
-        logger.info("=== 步骤 2/6: 启动 MAA（模拟器由 MAA 启动）===")
+        logger.info("=== 步骤 2/7: 启动 MAA（模拟器由 MAA 启动）===")
         adapter = MaaAdapter()
         adapter.start(maa_cfg)
         if not adapter.launch():
@@ -79,9 +90,12 @@ class Orchestrator:
         logger.info("=== 步骤 3/7: 等待就绪并清理弹窗 ===")
         self._settle(monitor, wf.get("startup_settle_seconds", 25))
 
-        logger.info("=== 步骤 4/7: 周常 - 检查/设置「使用药剂」 ===")
+        logger.info("=== 步骤 4/7: 周常 - 体力药 / 剿灭刷取 ===")
         try:
-            apply_weekly(self.config.get("weekly", {}))
+            apply_weekly(self.config.get("weekly", {}), state=self.weekly_state)
+            anni = self.weekly_state.annihilation()
+            self._anni_base_runs = int(anni.get("runs", 0))
+            self._anni_base_sanity = int(anni.get("sanity", 0))
         except Exception as e:
             logger.warning("周常处理异常: {}", e)
 
@@ -96,13 +110,19 @@ class Orchestrator:
 
         logger.info("=== 步骤 6/7: 监控日志与弹窗，等待日常完成 ===")
         run_start = time.time()
+
+        def _poll() -> None:
+            monitor.scan_once()
+            self._check_annihilation(logmon, hwnd)
+
         result = logmon.wait_idle(
             timeout=wf.get("daily_timeout_seconds", 3600),
             interval=wf.get("poll_interval", 10),
-            on_poll=monitor.scan_once,
+            on_poll=_poll,
         )
         run_seconds = time.time() - run_start
         logger.info("监控结束: {}（运行 {} 秒）", result, int(run_seconds))
+        self._finalize_annihilation(report, logmon, hwnd)
 
         report.logs = logmon.logs
         report.popups_closed = monitor.closed
@@ -122,6 +142,51 @@ class Orchestrator:
             report.status = "success"
 
         return self._finish(report, started)
+
+    def _anni_limits(self) -> tuple[int, int]:
+        cfg = annihilation_config(self.config.get("weekly", {}))
+        return (
+            int(cfg.get("weekly_limit", 5)),
+            int(cfg.get("sanity_threshold", 124)),
+        )
+
+    def _check_annihilation(self, logmon: MaaLogMonitor, hwnd: int) -> None:
+        """Watch the panel log and, once the weekly annihilation is done, uncheck it."""
+        weekly_cfg = self.config.get("weekly", {})
+        if not annihilation_config(weekly_cfg).get("enabled"):
+            return
+        limit, threshold = self._anni_limits()
+        if self.weekly_state.annihilation_done(limit, threshold):
+            return
+        run_runs, run_sanity = parse_annihilation(logmon.logs)
+        if run_runs == 0 and run_sanity == 0:
+            return
+        total_runs = self._anni_base_runs + run_runs
+        total_sanity = self._anni_base_sanity + run_sanity
+        self.weekly_state.set_annihilation(total_runs, total_sanity, limit, threshold)
+        if self.weekly_state.annihilation_done(limit, threshold):
+            logger.info(
+                "周常：剿灭刷取已完成（{}/{} 次，{} 理智），取消勾选「{}」",
+                total_runs, limit, total_sanity, ANNIHILATION_TASK,
+            )
+            try:
+                MaaTaskToggle().set_state(hwnd, ANNIHILATION_TASK, False)
+            except Exception as e:
+                logger.warning("周常：取消勾选剿灭刷取失败: {}", e)
+
+    def _finalize_annihilation(self, report: RunReport, logmon: MaaLogMonitor, hwnd: int) -> None:
+        weekly_cfg = self.config.get("weekly", {})
+        if not annihilation_config(weekly_cfg).get("enabled"):
+            return
+        limit, threshold = self._anni_limits()
+        self._check_annihilation(logmon, hwnd)
+        anni = self.weekly_state.annihilation()
+        runs = int(anni.get("runs", 0))
+        sanity = int(anni.get("sanity", 0))
+        if anni.get("done"):
+            report.annihilation = f"已完成剿灭作战（本周 {runs}/{limit} 次，消耗理智 {sanity}）"
+        elif runs or sanity:
+            report.annihilation = f"剿灭进行中（本周 {runs}/{limit} 次，消耗理智 {sanity}）"
 
     def _ensure_daily_started(
         self,
@@ -198,4 +263,12 @@ class Orchestrator:
         notifier.send(subject, report.to_html())
 
         logger.info("报告:\n{}", report.to_text())
+
+        if self.config.get("workflow", {}).get("auto_close"):
+            logger.info("任务完成，自动关闭 MAA 与模拟器")
+            try:
+                close_all(self.config.get("adapters", {}).get("maa", {}).get("emulator", {}))
+            except Exception as e:
+                logger.warning("自动关闭 MAA 与模拟器失败: {}", e)
+
         return report

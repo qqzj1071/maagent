@@ -83,6 +83,7 @@ class MaaLogMonitor:
         self.hwnd = hwnd
         self.debug_dir = debug_dir
         self.logs: list[str] = []
+        self._seen: set[str] = set()
 
     def _crop(self, region: tuple[float, float, float, float]) -> Image.Image | None:
         img = capture_window(self.hwnd)
@@ -115,7 +116,8 @@ class MaaLogMonitor:
     def collect_logs(self) -> list[str]:
         lines = self.read_logs()
         for line in lines:
-            if line and line not in self.logs:
+            if line and line not in self._seen:
+                self._seen.add(line)
                 self.logs.append(line)
         return lines
 
@@ -131,14 +133,6 @@ class MaaLogMonitor:
             ln for ln in self.logs
             if any(k in ln for k in ERROR_KEYWORDS) and not any(ig in ln for ig in ignore)
         ]
-
-    def wait_running(self, timeout: float, interval: float = 3.0) -> bool:
-        deadline = time.time() + timeout
-        while time.time() < deadline:
-            if self.button_state() == "running":
-                return True
-            time.sleep(interval)
-        return False
 
     def _alive(self) -> bool:
         return bool(win32gui.IsWindow(self.hwnd))
