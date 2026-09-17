@@ -5,8 +5,10 @@ __pycache__/
 venv/
 build/
 dist/
+*.spec
 logs/
 config/config.yaml
 config/config.test.yaml
+*.export.json
 .idea/
 .vscode/

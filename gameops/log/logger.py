@@ -11,7 +11,8 @@ def setup_logger(log_dir: str = "logs", level: str = "INFO") -> None:
         except Exception:
             pass
     logger.remove()
-    logger.add(sys.stderr, level=level, colorize=True)
+    if sys.stderr is not None:
+        logger.add(sys.stderr, level=level, colorize=True)
     Path(log_dir).mkdir(parents=True, exist_ok=True)
     logger.add(
         Path(log_dir) / "gameops_{time:YYYY-MM-DD}.log",
