@@ -1,0 +1,36 @@
+app:
+  name: GameOps
+  timezone: Asia/Shanghai
+  log_dir: logs
+
+adapters:
+  maa:
+    enabled: true
+    executable: "D:/path/to/maa-cli.exe"
+    config_dir: "D:/path/to/maa/config"
+  maaend:
+    enabled: false
+    executable: ""
+  bgi:
+    enabled: false
+    executable: ""
+
+schedule:
+  - name: "日常-明日方舟"
+    adapter: maa
+    cron: "0 4 * * *"
+  - name: "日常-碧蓝航线"
+    adapter: bgi
+    cron: "30 4 * * *"
+
+notify:
+  email:
+    enabled: false
+    smtp_host: smtp.example.com
+    smtp_port: 465
+    username: ""
+    password: ""
+    to: []
+  wechat:
+    enabled: true
+    webhook_url: "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=YOUR_KEY"
