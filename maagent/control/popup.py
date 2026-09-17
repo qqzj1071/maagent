@@ -233,10 +233,12 @@ def find_text(items: list[OcrItem], text: str) -> OcrItem | None:
 
 
 def ensure_visible(hwnd: int) -> None:
-    """Restore a minimized window so PrintWindow capture works."""
+    """Restore a minimized window so capture works (some apps ignore SW_RESTORE)."""
     try:
         if win32gui.IsIconic(hwnd):
             win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
+            if win32gui.IsIconic(hwnd):
+                win32gui.SendMessage(hwnd, win32con.WM_SYSCOMMAND, win32con.SC_RESTORE, 0)
             time.sleep(1.0)
     except Exception:
         pass
@@ -261,8 +263,18 @@ def _force_foreground(hwnd: int) -> None:
         logger.warning("窗口置前失败: {}", e)
 
 
-def _click_screen(x: int, y: int) -> None:
-    win32api.SetCursorPos((int(x), int(y)))
+def _click_screen(x: int, y: int, retries: int = 5) -> None:
+    x, y = int(x), int(y)
+    for attempt in range(1, retries + 1):
+        try:
+            win32api.SetCursorPos((x, y))
+            break
+        except Exception as e:
+            # can fail transiently while another process seizes the mouse
+            logger.debug("SetCursorPos 失败（第 {} 次）: {}", attempt, e)
+            time.sleep(0.3)
+    else:
+        raise RuntimeError(f"无法移动鼠标到 ({x}, {y})，可能有程序抢占了鼠标")
     time.sleep(0.1)
     win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
     win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)

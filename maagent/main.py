@@ -8,6 +8,7 @@ from loguru import logger
 from maagent.adapters.maa import MaaAdapter
 from maagent.control.popup import MaaPopupMonitor
 from maagent.control.process import close_all
+from maagent.core.maaend import MaaEndOrchestrator
 from maagent.core.orchestrator import Orchestrator
 from maagent.log.logger import setup_logger
 
@@ -21,6 +22,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="maagent - 二游日常助手")
     parser.add_argument("--config", default=None, help="config.yaml 路径")
     parser.add_argument("--daily", action="store_true", help="完整工作流：启动→关弹窗→LinkStart→监控→报告→邮件")
+    parser.add_argument("--maaend", action="store_true", help="终末地工作流：启动 MaaEnd→开始任务→等待结束→报告→邮件")
     parser.add_argument("--run", action="store_true", help="仅启动 MAA 并触发 Link Start")
     parser.add_argument("--launch", action="store_true", help="仅启动 MAA，不触发 Link Start")
     parser.add_argument("--monitor", action="store_true", help="监控并自动关闭 MAA 弹窗")
@@ -45,6 +47,11 @@ def main(argv: list[str] | None = None) -> int:
         logger.info("工作流结束，状态: {}", report.status_label)
         return 0 if report.status == "success" else 1
 
+    if args.maaend:
+        report = MaaEndOrchestrator(cfg).run_daily()
+        logger.info("终末地工作流结束，状态: {}", report.status_label)
+        return 0 if report.status == "success" else 1
+
     if args.run or args.launch:
         adapter = MaaAdapter()
         adapter.start(maa_cfg)
@@ -63,7 +70,7 @@ def main(argv: list[str] | None = None) -> int:
         closed = monitor.monitor(args.seconds, interval=pm_cfg.get("interval", 2.0))
         logger.info("共关闭弹窗 {} 个: {}", len(closed), closed)
 
-    if not (args.daily or args.run or args.launch or args.monitor):
+    if not (args.daily or args.maaend or args.run or args.launch or args.monitor):
         parser.print_help()
     return 0
 

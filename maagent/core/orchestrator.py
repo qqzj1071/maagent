@@ -39,7 +39,7 @@ from maagent.control.weekly import (
     today_runs_annihilation,
 )
 from maagent.notify.email import EmailNotifier
-from maagent.report.generator import RunReport
+from maagent.report.generator import RunReport, format_duration
 
 
 def _now() -> str:
@@ -49,17 +49,6 @@ def _now() -> str:
 def _hms_to_sec(hms: str) -> int:
     h, m, s = (int(x) for x in hms.split(":"))
     return h * 3600 + m * 60 + s
-
-
-def _fmt_duration(seconds: float) -> str:
-    seconds = int(seconds)
-    h, rem = divmod(seconds, 3600)
-    m, s = divmod(rem, 60)
-    if h:
-        return f"{h} 小时 {m} 分 {s} 秒"
-    if m:
-        return f"{m} 分 {s} 秒"
-    return f"{s} 秒"
 
 
 class WorkflowStopped(Exception):
@@ -130,12 +119,23 @@ class Orchestrator:
             report = RunReport(game=wf.get("game", "明日方舟"), started_at=_now())
             report.status = "stopped"
             report.finished_at = _now()
-            report.duration = _fmt_duration(time.time() - started)
+            report.duration = format_duration(time.time() - started)
             report.errors.append("用户急停，工作流已中止")
             if self._logmon is not None:
                 report.logs = self._logmon.logs
                 self._populate_from_logs(report)
             self._stop_maa_task()
+            return self._finish(report, started, auto_close=False)
+        except Exception as e:
+            logger.exception("工作流异常: {}", e)
+            wf = self.config.get("workflow", {})
+            report = RunReport(game=wf.get("game", "明日方舟"), started_at=_now())
+            report.status = "failed"
+            report.finished_at = _now()
+            report.duration = format_duration(time.time() - started)
+            report.errors.append(f"异常: {e}")
+            if self._logmon is not None:
+                report.logs = self._logmon.logs
             return self._finish(report, started, auto_close=False)
 
     def _run_daily(self, started: float) -> RunReport:
@@ -337,7 +337,7 @@ class Orchestrator:
         if end_t:
             report.finished_at = end_t
         if start_t and end_t:
-            report.duration = _fmt_duration((_hms_to_sec(end_t) - _hms_to_sec(start_t)) % 86400)
+            report.duration = format_duration((_hms_to_sec(end_t) - _hms_to_sec(start_t)) % 86400)
         sanity = parse_sanity(report.logs)
         if sanity:
             report.sanity = f"{sanity[0]}/{sanity[1]}"
@@ -350,7 +350,7 @@ class Orchestrator:
         if not report.finished_at:
             report.finished_at = _now()
         if not report.duration:
-            report.duration = _fmt_duration(time.time() - started)
+            report.duration = format_duration(time.time() - started)
 
         email_cfg = self.config.get("notify", {}).get("email", {})
         notifier = EmailNotifier(email_cfg)

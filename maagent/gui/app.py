@@ -39,6 +39,7 @@ from PySide6.QtWidgets import (
 from maagent.control.monthly import MonthlyState
 from maagent.control.process import close_all
 from maagent.control.weekly import WEEKDAY_NAMES, WeeklyState
+from maagent.core.maaend import MaaEndOrchestrator
 from maagent.core.orchestrator import Orchestrator
 from maagent.log.logger import setup_logger
 
@@ -81,6 +82,7 @@ QPlainTextEdit { background: #fbfbfd; border: 1px solid #e5e7eb; border-radius: 
 
 QScrollArea#WeeklyScroll { background: transparent; border: none; }
 QWidget#ScrollInner { background: transparent; }
+QWidget#LeftPanel { background: transparent; }
 QScrollBar:vertical { background: transparent; width: 10px; margin: 0; }
 QScrollBar::handle:vertical { background: #d0d7de; border-radius: 5px; min-height: 30px; }
 QScrollBar::handle:vertical:hover { background: #a5b4fc; }
@@ -348,14 +350,24 @@ class DailyWorker(QThread):
     status = Signal(str)
     finished_report = Signal(object)
 
-    def __init__(self, config: dict, stop_event: threading.Event | None = None) -> None:
+    def __init__(
+        self,
+        config: dict,
+        stop_event: threading.Event | None = None,
+        software: str = "maa",
+    ) -> None:
         super().__init__()
         self.config = config
         self.stop_event = stop_event
+        self.software = software
 
     def run(self) -> None:
         try:
-            report = Orchestrator(self.config, stop_event=self.stop_event).run_daily()
+            if self.software == "maaend":
+                runner = MaaEndOrchestrator(self.config, stop_event=self.stop_event)
+            else:
+                runner = Orchestrator(self.config, stop_event=self.stop_event)
+            report = runner.run_daily()
             self.finished_report.emit(report)
         except Exception as e:
             logger.exception("工作流异常: {}", e)
@@ -539,7 +551,10 @@ class MaAgentWindow(QMainWindow):
         auto_row.addWidget(self.auto_close_switch)
         left_col.addLayout(auto_row)
 
-        body.addLayout(left_col, 7)
+        self.left_panel = QWidget()
+        self.left_panel.setObjectName("LeftPanel")
+        self.left_panel.setLayout(left_col)
+        body.addWidget(self.left_panel, 7)
         self.update_weekly_status()
         self.update_annihilation_status()
         self.update_monthly_status()
@@ -602,6 +617,8 @@ class MaAgentWindow(QMainWindow):
         self.selected_software = key
         for card_key, card in self.cards.items():
             card.set_selected(card_key == key)
+        # 周常/月常 只对 MAA 有意义
+        self.left_panel.setVisible(key == "maa")
 
     def selected_days(self) -> list[int]:
         return [i for i, btn in enumerate(self.day_buttons) if btn.isChecked()]
@@ -732,25 +749,34 @@ class MaAgentWindow(QMainWindow):
         if self.worker and self.worker.isRunning():
             self.request_stop()
             return
+        software = self.selected_software or "maa"
+        if not self._software_enabled(software):
+            name = SOFTWARE_META.get(software, (software, ""))[0]
+            logger.warning("{} 未启用，无法开始", name)
+            self.status_label.setText(f"状态: {name} 未启用")
+            return
         self.stop_event = threading.Event()
         self.btn_start.setEnabled(True)
-        self.btn_start.setText("急停")
+        self.btn_start.setText("停止日常")
         self._set_button_role(self.btn_start, "Danger")
         self.status_label.setText("状态: 运行中...")
         self.report_view.clear()
-        self.worker = DailyWorker(self.config, self.stop_event)
+        self.worker = DailyWorker(self.config, self.stop_event, software)
         self.worker.status.connect(self.status_label.setText)
         self.worker.finished_report.connect(self.on_report)
         self.worker.finished.connect(self.on_worker_finished)
         self.worker.start()
+
+    def _software_enabled(self, key: str) -> bool:
+        return bool((self.config.get("adapters", {}) or {}).get(key, {}).get("enabled", False))
 
     def request_stop(self) -> None:
         if self.stop_event is not None:
             self.stop_event.set()
         self.btn_start.setEnabled(False)
         self.btn_start.setText("停止中...")
-        self.status_label.setText("状态: 正在急停...")
-        logger.warning("已请求急停，正在中止当前工作流")
+        self.status_label.setText("状态: 正在停止...")
+        logger.warning("已请求停止日常，正在中止当前工作流")
 
     @staticmethod
     def _set_button_role(button: QPushButton, role: str) -> None:

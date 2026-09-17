@@ -21,7 +21,10 @@ maagent/                 # Python package
     logmonitor.py        # OCR the MAA log panel, parse times/sanity/errors
     weekly.py            # 周常: 使用药剂 toggle + 剿灭刷取 scheduling / progress
     monthly.py           # 月常: 绿票/黄票商店 via 小工具→牛杂 OCR navigation
-  core/orchestrator.py   # the --daily workflow
+    maaend.py            # MaaEnd window/process helpers + F10/F11 + 开始任务 click
+    maaend_api.py        # MaaEnd HTTP API client + MXU pipeline_override computation
+  core/orchestrator.py   # the MAA --daily workflow
+  core/maaend.py         # the MaaEnd (终末地) --maaend workflow
   report/generator.py    # concise report (start/end, errors, sanity, next deadline)
   notify/email.py        # SMTP (QQ) ; notify/wechat.py (stub)
   gui/app.py             # PySide6 GUI (entry for the exe)
@@ -70,6 +73,41 @@ send email.
 - OCR quirks: the button reads `LinkStart!` (no space); the tab reads `键长草`
   (drops `一`). Match with candidate tuples, not exact strings.
 
+## MaaEnd (终末地) — `--maaend`
+
+- MaaEnd is a Tauri/WebView2 app (`MaaEnd.exe`, window class `Tauri Window`).
+  **PrintWindow does NOT work** → grab the screen with `ImageGrab.grab(window_rect)`
+  while the window is foreground (`control/maaend.py:capture_window_screen`).
+- `SetForegroundWindow` is denied by the foreground lock; tap ALT
+  (`keybd_event(VK_MENU)`) first — see `MaaEndUI.foreground`.
+- A minimized MaaEnd ignores `SW_RESTORE`; fall back to
+  `WM_SYSCOMMAND / SC_RESTORE` (added to `popup.ensure_visible`).
+- **MaaEnd and Endfield both run elevated** (`Endfield.exe` has
+  `requireAdministrator`; WinError 740 otherwise). Windows UIPI then blocks a
+  non-elevated maagent from injecting mouse/keyboard into MaaEnd. So the exe is
+  built with `--uac-admin` and maagent runs elevated — do NOT try to de-elevate
+  MaaEnd (it could no longer drive the elevated game).
+- **HTTP API** on `127.0.0.1:12701/api` (config `settings.webServerPort`):
+  `GET /config`, `POST /config`, `GET /interface`, `GET /maa/state`,
+  `GET /maa/windows?class_regex=&window_regex=`, `GET /logs`,
+  `POST /maa/instances/{id}/connect`, `POST .../tasks/start`, `POST .../tasks/stop`,
+  `GET /system/is-elevated`. `control/maaend_api.py` wraps these and ports MXU's
+  `pipeline_override` computation (`Ea/ns/$s/Qh/jn` + the `__MXU_*` special tasks).
+  Note `tasks/start` needs the resource loaded + controller connected first
+  (else HTTP 500 "Resource not loaded"), so we don't use it to start.
+- Workflow: open MaaEnd → enable `settings.hotkeys.globalEnabled` via `POST /config`
+  → send **F10** (MaaEnd's startTasks hotkey) → MaaEnd runs its preActions
+  (launching Endfield itself) + tasks → poll `is_running` → build the report from
+  `/logs`. F11 stops. A click on 开始任务 is the fallback if the hotkey misses.
+- Logs: `debug/YYYY-MM-DD-N.log` (app log) and `debug/maafw.log`; the API `/logs`
+  gives the same structured entries. `autoClearLogsOnLaunch` clears them.
+- Report values: task start/end from `/api/logs` (filtered to the current run by
+  the last entry timestamp before starting); 武库配额/嵌晶玉 purchases from
+  `debug/go-service.log` `AddItemData` (`item_gachabyproducts_weapongold` /
+  `item_diamond`); 未来可期 from `EssenceFilter` `matched_total`; 理智 from the
+  framework log's `当前理智 X/Y`. Remaining sanity = current − (160 if ≥160 else
+  80 if >80); next latest start = end + (max−remaining) × 7分12秒.
+
 ## Config essentials (`config/config.yaml`)
 
 - `adapters.maa.executable` — `D:/MAA/MAA.exe`
@@ -106,7 +144,7 @@ send email.
 From the repo root:
 
 ```
-.venv\Scripts\pyinstaller.exe --name maagent --windowed --onefile --noconfirm `
+.venv\Scripts\pyinstaller.exe --name maagent --windowed --onefile --uac-admin --noconfirm `
   --icon maagent/gui/assets/icon.ico `
   --add-data "maagent/gui/assets;maagent/gui/assets" `
   --collect-all rapidocr_onnxruntime --collect-all onnxruntime `
@@ -137,7 +175,7 @@ git -c http.proxy=http://127.0.0.1:7897 -c https.proxy=http://127.0.0.1:7897 pus
 ## Verify before calling it done
 
 ```
-.venv\Scripts\python.exe -c "import maagent.main, maagent.core.orchestrator, maagent.control.popup, maagent.control.logmonitor, maagent.control.weekly, maagent.control.monthly, maagent.gui.app; print('OK')"
+.venv\Scripts\python.exe -c "import maagent.main, maagent.core.orchestrator, maagent.core.maaend, maagent.control.popup, maagent.control.logmonitor, maagent.control.weekly, maagent.control.monthly, maagent.control.maaend, maagent.gui.app; print('OK')"
 ```
 
 GUI smoke test: launch `dist\maagent.exe`, wait for a window titled
