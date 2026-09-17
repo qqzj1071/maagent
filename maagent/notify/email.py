@@ -25,7 +25,7 @@ class EmailNotifier:
 
         msg = MIMEText(html, "html", "utf-8")
         msg["Subject"] = Header(subject, "utf-8")
-        msg["From"] = formataddr(("GameOps", cfg["username"]))
+        msg["From"] = formataddr(("maagent", cfg["username"]))
         msg["To"] = ", ".join(to)
 
         host = cfg["smtp_host"]

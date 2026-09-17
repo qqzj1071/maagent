@@ -9,7 +9,7 @@ from typing import Any
 
 from loguru import logger
 
-from gameops.adapters.base import Adapter, RunResult, RunStatus
+from maagent.adapters.base import Adapter, RunResult, RunStatus
 
 VK_SHIFT = 0x10
 VK_CONTROL = 0x11

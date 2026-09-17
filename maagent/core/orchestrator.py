@@ -6,17 +6,17 @@ from typing import Any
 
 from loguru import logger
 
-from gameops.adapters.maa import MaaAdapter
-from gameops.control.logmonitor import (
+from maagent.adapters.maa import MaaAdapter
+from maagent.control.logmonitor import (
     MaaLogMonitor,
     compute_next_deadline,
     parse_sanity,
     parse_times,
 )
-from gameops.control.popup import MaaPopupMonitor, main_window
-from gameops.control.process import close_all
-from gameops.notify.email import EmailNotifier
-from gameops.report.generator import RunReport
+from maagent.control.popup import MaaPopupMonitor, main_window
+from maagent.control.process import close_all
+from maagent.notify.email import EmailNotifier
+from maagent.report.generator import RunReport
 
 
 def _now() -> str:
@@ -187,7 +187,7 @@ class Orchestrator:
 
         email_cfg = self.config.get("notify", {}).get("email", {})
         notifier = EmailNotifier(email_cfg)
-        subject = f"[GameOps] {report.game}日常 - {report.status_label}"
+        subject = f"[maagent] {report.game}日常 - {report.status_label}"
         notifier.send(subject, report.to_html())
 
         logger.info("报告:\n{}", report.to_text())

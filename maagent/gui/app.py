@@ -21,9 +21,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from gameops.control.process import close_all
-from gameops.core.orchestrator import Orchestrator
-from gameops.log.logger import setup_logger
+from maagent.control.process import close_all
+from maagent.core.orchestrator import Orchestrator
+from maagent.log.logger import setup_logger
 
 
 def app_base_dir() -> Path:
@@ -35,7 +35,7 @@ def app_base_dir() -> Path:
 def asset_path(name: str) -> Path:
     if getattr(sys, "frozen", False):
         candidates = [
-            Path(getattr(sys, "_MEIPASS", app_base_dir())) / "gameops" / "gui" / "assets" / name,
+            Path(getattr(sys, "_MEIPASS", app_base_dir())) / "maagent" / "gui" / "assets" / name,
             app_base_dir() / "assets" / name,
         ]
     else:
@@ -81,7 +81,7 @@ class DailyWorker(QThread):
             self.status.emit(f"状态: 异常 - {e}")
 
 
-class GameOpsWindow(QMainWindow):
+class MaAgentWindow(QMainWindow):
     def __init__(self, config: dict, config_path: Path, bridge: LogBridge) -> None:
         super().__init__()
         self.config = config
@@ -92,7 +92,7 @@ class GameOpsWindow(QMainWindow):
         self.bridge.message.connect(self.append_log)
 
     def _build_ui(self) -> None:
-        self.setWindowTitle("GameOps - 二游日常助手")
+        self.setWindowTitle("maagent - 二游日常助手")
         self.resize(860, 660)
         central = QWidget()
         layout = QVBoxLayout(central)
@@ -185,9 +185,9 @@ def main() -> int:
         colorize=False,
         format="{time:HH:mm:ss} | {level: <7} | {message}",
     )
-    logger.info("GameOps 启动，配置: {}", config_path)
+    logger.info("maagent 启动，配置: {}", config_path)
 
-    win = GameOpsWindow(config, config_path, bridge)
+    win = MaAgentWindow(config, config_path, bridge)
     win.setWindowIcon(icon)
     win.show()
     return app.exec()

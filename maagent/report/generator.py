@@ -30,7 +30,7 @@ class RunReport:
     def to_text(self) -> str:
         err = "无" if not self.errors else "；".join(self.errors)
         return "\n".join([
-            f"【GameOps 日常报告】{self.game}（{self.status_label}）",
+            f"【maagent 日常报告】{self.game}（{self.status_label}）",
             f"开始: {self.started_at or '未知'}    结束: {self.finished_at or '未知'}    耗时: {self.duration or '未知'}",
             f"报错: {err}",
             f"剩余理智: {self.sanity or '未知'}",
@@ -41,7 +41,7 @@ class RunReport:
         err = "无" if not self.errors else "<br>".join(self.errors)
         color = {"success": "#2e7d32", "failed": "#c62828", "timeout": "#ef6c00"}.get(self.status, "#555")
         return f"""<html><body style="font-family:sans-serif;font-size:14px">
-<h3>【GameOps 日常报告】{self.game} <span style="color:{color}">{self.status_label}</span></h3>
+<h3>【maagent 日常报告】{self.game} <span style="color:{color}">{self.status_label}</span></h3>
 <table cellpadding="4" style="border-collapse:collapse">
 <tr><td><b>开始</b></td><td>{self.started_at or '未知'}</td></tr>
 <tr><td><b>结束</b></td><td>{self.finished_at or '未知'}</td></tr>

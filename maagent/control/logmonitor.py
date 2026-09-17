@@ -9,7 +9,7 @@ import win32gui
 from loguru import logger
 from PIL import Image
 
-from gameops.control.popup import capture_window, recognize
+from maagent.control.popup import capture_window, recognize
 
 SANITY_RECOVER_MINUTES = 6
 

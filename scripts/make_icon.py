@@ -8,7 +8,7 @@ from PIL import Image
 sys.stdout.reconfigure(errors="replace")
 
 SRC = Path(r"D:\install\maagent图标.png")
-OUT_DIR = Path(__file__).resolve().parent.parent / "gameops" / "gui" / "assets"
+OUT_DIR = Path(__file__).resolve().parent.parent / "maagent" / "gui" / "assets"
 WHITE = 235
 
 

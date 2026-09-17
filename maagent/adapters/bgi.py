@@ -1,4 +1,4 @@
-from gameops.adapters.base import Adapter
+from maagent.adapters.base import Adapter
 
 
 class BgiAdapter(Adapter):

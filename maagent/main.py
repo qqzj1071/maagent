@@ -5,11 +5,11 @@ from pathlib import Path
 import yaml
 from loguru import logger
 
-from gameops.adapters.maa import MaaAdapter
-from gameops.control.popup import MaaPopupMonitor
-from gameops.control.process import close_all
-from gameops.core.orchestrator import Orchestrator
-from gameops.log.logger import setup_logger
+from maagent.adapters.maa import MaaAdapter
+from maagent.control.popup import MaaPopupMonitor
+from maagent.control.process import close_all
+from maagent.core.orchestrator import Orchestrator
+from maagent.log.logger import setup_logger
 
 
 def load_config(path: str) -> dict:
@@ -18,7 +18,7 @@ def load_config(path: str) -> dict:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="GameOps - 二游日常助手")
+    parser = argparse.ArgumentParser(description="maagent - 二游日常助手")
     parser.add_argument("--config", default=None, help="config.yaml 路径")
     parser.add_argument("--daily", action="store_true", help="完整工作流：启动→关弹窗→LinkStart→监控→报告→邮件")
     parser.add_argument("--run", action="store_true", help="仅启动 MAA 并触发 Link Start")

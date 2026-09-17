@@ -7,10 +7,10 @@ import win32gui
 
 sys.stdout.reconfigure(errors="replace")
 
-from gameops.control.logmonitor import MaaLogMonitor
-from gameops.control.popup import MaaPopupMonitor, main_window
-from gameops.core.orchestrator import Orchestrator
-from gameops.report.generator import RunReport
+from maagent.control.logmonitor import MaaLogMonitor
+from maagent.control.popup import MaaPopupMonitor, main_window
+from maagent.core.orchestrator import Orchestrator
+from maagent.report.generator import RunReport
 
 STATE = Path("logs/daily_logs.json")
 POPUPS = Path("logs/daily_popups.json")
