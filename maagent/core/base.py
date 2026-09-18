@@ -20,7 +20,12 @@ def now_str() -> str:
 
 
 def send_report(config: dict[str, Any], report: RunReport) -> bool:
-    email_cfg = (config.get("notify", {}) or {}).get("email", {})
+    email_cfg = dict((config.get("notify", {}) or {}).get("email", {}) or {})
+    account_email = str(((config.get("server", {}) or {}).get("account_email") or "")).strip()
+    if account_email:
+        # 登录账号后，任务报告只发给该账号邮箱
+        email_cfg["to"] = [account_email]
+        email_cfg["enabled"] = True
     log_dir = (config.get("app", {}) or {}).get("log_dir", "logs")
     subject = f"[Maagent] {report.game}日常 - {report.status_label}"
     return EmailNotifier(email_cfg, log_dir=log_dir).send(subject, report.to_html())
@@ -47,7 +52,10 @@ class BaseWorkflow:
         """Called when the user stops the workflow (before the report)."""
 
     def _auto_close(self) -> None:
-        """Called after the report when ``workflow.auto_close`` is enabled."""
+        """Called after the report when auto-close is enabled."""
+
+    def _auto_close_enabled(self) -> bool:
+        return bool((self.config.get("workflow", {}) or {}).get("auto_close", False))
 
     def _game_name(self) -> str:
         return (self.config.get("workflow", {}) or {}).get("game", "明日方舟")
@@ -87,7 +95,7 @@ class BaseWorkflow:
         logger.info("=== 步骤 {}/{}: 生成报告并发送邮件 ===", self.steps, self.steps)
         send_report(self.config, report)
         logger.info("报告:\n{}", report.to_text())
-        if auto_close and self.config.get("workflow", {}).get("auto_close"):
+        if auto_close and self._auto_close_enabled():
             try:
                 self._auto_close()
             except Exception as e:

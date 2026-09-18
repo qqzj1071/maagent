@@ -236,12 +236,31 @@ From the repo root:
 .venv\Scripts\pyinstaller.exe --name maagent --windowed --onefile --uac-admin --noconfirm `
   --icon maagent/gui/assets/icon.ico `
   --add-data "maagent/gui/assets;maagent/gui/assets" `
+  --add-data "maagent/server/web;maagent/server/web" `
   --collect-all rapidocr_onnxruntime --collect-all onnxruntime `
   --collect-all pyclipper --collect-all shapely `
   --add-data "config/config.yaml;config" maagent/gui/app.py
 ```
 
 Output `dist\maagent.exe` (~140 MB onefile; first launch unpacks, ~10-30 s).
+
+## Account / phone web remote control
+
+- `maagent/server/` is a stdlib `http.server` account + remote-control service:
+  SQLite accounts (`store.py`), PBKDF2 passwords + sha256-digest Bearer tokens
+  (`security.py`), shared `AccountService` (`accounts.py`), routes (`api.py`),
+  static web assets (`web/`, `web_assets.py`).
+- The GUI embeds it (settings → 账户 logs in; `server.enabled` + `account_email`
+  gate it) and shares one `WorkflowController` with it (`gui/controller_bridge.py`
+  relays events to Qt). CLI headless mode: `python -m maagent.main --serve`.
+- The phone client is the built-in **PWA** in `maagent/server/web/` (no app
+  install); expose it over HTTPS with **Tailscale Funnel** (`tailscale funnel
+  8765`), so the phone needs no VPN. The web app talks to same-origin `/api/v1`.
+- The server prefers an external `web/` next to the exe (`dist/web/`), so web
+  edits only need a copy + restart, not a rebuild.
+- Not logged in on the PC → the remote service does not start. Task reports go
+  to `server.account_email`; the first login / account change emails that
+  address the phone web URL (`server.public_url` or the Tailscale Funnel name).
 
 Regenerate the icon (transparent background + multi-size ico):
 
@@ -264,7 +283,7 @@ git -c http.proxy=http://127.0.0.1:7897 -c https.proxy=http://127.0.0.1:7897 pus
 ## Verify before calling it done
 
 ```
-.venv\Scripts\python.exe -c "import maagent.main, maagent.core.orchestrator, maagent.core.maaend, maagent.control.popup, maagent.control.logmonitor, maagent.control.weekly, maagent.control.monthly, maagent.control.maaend, maagent.gui.app; print('OK')"
+.venv\Scripts\python.exe -c "import maagent.main, maagent.core.orchestrator, maagent.core.maaend, maagent.core.controller, maagent.core.scheduler, maagent.control.popup, maagent.control.logmonitor, maagent.control.weekly, maagent.control.monthly, maagent.control.maaend, maagent.server.app, maagent.server.api, maagent.server.accounts, maagent.gui.app; print('OK')"
 ```
 
 GUI smoke test: launch `dist\maagent.exe`, wait for a window titled

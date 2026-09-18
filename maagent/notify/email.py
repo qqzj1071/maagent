@@ -52,7 +52,28 @@ class EmailNotifier:
         msg["Subject"] = Header(subject, "utf-8")
         msg["From"] = formataddr(("Maagent", cfg["username"]))
         msg["To"] = ", ".join(to)
+        return self._deliver(msg, to)
 
+    def send_to(
+        self, to: str | list[str], subject: str, html: str, from_name: str = "Maagent"
+    ) -> bool:
+        """Send an ad-hoc email to explicit recipients, ignoring ``enabled``."""
+        cfg = self.config
+        recipients = [to] if isinstance(to, str) else list(to)
+        if not recipients:
+            logger.warning("邮件收件人为空，跳过发送")
+            return False
+        if not cfg.get("username") or not cfg.get("password"):
+            logger.warning("SMTP 账号或授权码未配置，跳过发送")
+            return False
+        msg = MIMEText(html, "html", "utf-8")
+        msg["Subject"] = Header(subject, "utf-8")
+        msg["From"] = formataddr((from_name, cfg["username"]))
+        msg["To"] = ", ".join(recipients)
+        return self._deliver(msg, recipients)
+
+    def _deliver(self, msg: Any, to: list[str]) -> bool:
+        cfg = self.config
         host = cfg["smtp_host"]
         port = int(cfg.get("smtp_port", 465))
         try:

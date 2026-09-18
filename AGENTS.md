@@ -14,7 +14,8 @@ project skill: `.opencode/skills/maagent-dev/SKILL.md`.
 - Daily workflow chain: `.venv\Scripts\python.exe -m maagent.main --workflow`
 - Start MAA + Link Start only: `.venv\Scripts\python.exe -m maagent.main --run`
 - Close MAA + emulator: `.venv\Scripts\python.exe -m maagent.main --close`
-- Verify imports: `.venv\Scripts\python.exe -c "import maagent.main, maagent.core.orchestrator, maagent.core.scheduler, maagent.control.popup, maagent.control.logmonitor, maagent.gui.app; print('OK')"`
+- Account / phone-web service (headless): `.venv\Scripts\python.exe -m maagent.main --config config/config.yaml --serve`
+- Verify imports: `.venv\Scripts\python.exe -c "import maagent.main, maagent.core.orchestrator, maagent.core.controller, maagent.core.scheduler, maagent.control.popup, maagent.control.logmonitor, maagent.server.app, maagent.server.accounts, maagent.gui.app; print('OK')"`
 
 ## Rules
 

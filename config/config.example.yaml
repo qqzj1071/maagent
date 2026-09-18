@@ -84,6 +84,7 @@ adapters:
     path: "D:/MaaEnd-win-x86_64-v2.7.0"
     executable: "D:/MaaEnd-win-x86_64-v2.7.0/MaaEnd.exe"
     wait_seconds: 30            # 启动后等待主窗口的时间
+    auto_close: false            # 任务完成并发送报告后自动关闭 MaaEnd 与终末地
     log_dir: "D:/MaaEnd-win-x86_64-v2.7.0/debug"   # 会话日志所在目录
     web_port: 12701
     game_process: "Endfield.exe"
@@ -102,3 +103,25 @@ notify:
   wechat:
     enabled: false
     webhook_url: ""
+
+server:                          # 账号 / 手机远程控制服务（公网直连）
+  enabled: false                 # true 时随 GUI 启动；GUI 与手机共用同一工作流控制器
+  host: "tailscale"              # "tailscale"=仅监听 Tailscale 地址（推荐）；也可填 0.0.0.0 或具体 IP
+  port: 8765
+  db_path: "config/accounts.db"  # SQLite 数据库位置
+  report_file: "logs/reports.jsonl"  # 远程报告持久化位置（手机端读取）
+  account_email: ""              # 当前登录账号邮箱（设置→账户 登录后自动写入；未登录不启动远程服务）
+  public_url: ""                 # 手机网页公网地址；留空则自动用 Tailscale Funnel 域名
+  last_notified_email: ""        # 已发送过网页地址邮件的账号（内部使用）
+  debug: false                   # true 时验证码直接返回在响应里（仅本地调试，切勿公网开启）
+  allow_register: true           # 是否开放注册
+  token_ttl_hours: 720           # 登录令牌有效期（30 天）
+  code_ttl_minutes: 10           # 邮箱验证码有效期
+  code_length: 6                 # 验证码位数
+  code_cooldown_seconds: 60      # 同一邮箱同用途两次发码的最小间隔
+  code_hourly_limit: 10          # 同一邮箱每小时最多发码次数
+  max_code_attempts: 5           # 单个验证码最多尝试次数
+  min_password_length: 8         # 密码最小长度
+  tls:                           # 公网直连强烈建议启用 HTTPS
+    certfile: ""                 # 例如 D:/certs/fullchain.pem
+    keyfile: ""                  # 例如 D:/certs/privkey.pem

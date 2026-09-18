@@ -12,3 +12,20 @@ config/config.test.yaml
 *.export.json
 .idea/
 .vscode/
+
+# Flutter / Dart (mobile/)
+mobile/.dart_tool/
+mobile/.packages
+mobile/.pub/
+mobile/.flutter-plugins
+mobile/.flutter-plugins-dependencies
+mobile/android/.gradle/
+mobile/android/local.properties
+mobile/android/key.properties
+mobile/ios/Pods/
+mobile/ios/.symlinks/
+mobile/ios/Flutter/Flutter.framework
+mobile/ios/Flutter/Flutter.podspec
+mobile/*.iml
+mobile/.idea/
+mobile/.vscode/

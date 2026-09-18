@@ -23,7 +23,8 @@ class WorkflowPanel(Panel):
     """The 日常工作流 panel: schedule toggle, mode, task lists and run button.
 
     Emits ``changed`` for any edit (the window then syncs + autosaves) and
-    ``run_requested`` with the active mode's software list.
+    ``run_requested`` with the sequential (整链) software list — the immediate
+    run button always starts the whole chain, never the per-task list.
     """
 
     changed = Signal()
@@ -32,6 +33,7 @@ class WorkflowPanel(Panel):
     def __init__(self, config: dict, parent: QWidget | None = None) -> None:
         super().__init__(t(WORKFLOW_NAME), parent)
         self.config = config
+        self._running = False
         self._build()
 
     # -- construction --------------------------------------------------- #
@@ -83,9 +85,12 @@ class WorkflowPanel(Panel):
         seq_tasks_label = QLabel(t("wf.seq_order_label"))
         seq_tasks_label.setObjectName("Hint")
         seq_layout.addWidget(seq_tasks_label)
-        self.seq_list = TaskListEditor(False, software_meta(), list(CHAIN_SOFTWARE))
+        enabled, seq_visible, self._hidden_seq, sched_visible, self._hidden_sched = (
+            self._split_tasks()
+        )
+        self.seq_list = TaskListEditor(False, software_meta(), enabled)
         self.seq_list.changed.connect(self._on_changed)
-        self.seq_list.set_tasks(wc.config_sequential_tasks(chain))
+        self.seq_list.set_tasks(seq_visible)
         seq_layout.addWidget(self.seq_list)
         self.add_widget(self.seq_box)
 
@@ -97,9 +102,9 @@ class WorkflowPanel(Panel):
         sched_hint.setObjectName("Hint")
         sched_hint.setWordWrap(True)
         sched_layout.addWidget(sched_hint)
-        self.sched_list = TaskListEditor(True, software_meta(), list(CHAIN_SOFTWARE))
+        self.sched_list = TaskListEditor(True, software_meta(), enabled)
         self.sched_list.changed.connect(self._on_changed)
-        self.sched_list.set_tasks(wc.config_scheduled_tasks(chain))
+        self.sched_list.set_tasks(sched_visible)
         sched_layout.addWidget(self.sched_list)
         self.add_widget(self.sched_box)
 
@@ -122,6 +127,35 @@ class WorkflowPanel(Panel):
         self.mode_task_btn.setChecked(mode == "scheduled")
         self.apply_mode()
 
+    # -- enabled software filtering ------------------------------------- #
+    def _enabled_softwares(self) -> list[str]:
+        adapters = self.config.get("adapters", {}) or {}
+        return [
+            s for s in CHAIN_SOFTWARE if (adapters.get(s, {}) or {}).get("enabled", False)
+        ]
+
+    def _split_tasks(self) -> tuple[list[str], list[dict], list[dict], list[dict], list[dict]]:
+        chain = wc.chain_cfg(self.config)
+        enabled = self._enabled_softwares()
+        sequential = wc.config_sequential_tasks(chain)
+        scheduled = wc.config_scheduled_tasks(chain)
+        seq_visible = [t for t in sequential if t["software"] in enabled]
+        seq_hidden = [t for t in sequential if t["software"] not in enabled]
+        sched_visible = [t for t in scheduled if t["software"] in enabled]
+        sched_hidden = [t for t in scheduled if t["software"] not in enabled]
+        return enabled, seq_visible, seq_hidden, sched_visible, sched_hidden
+
+    def refresh_enabled(self) -> None:
+        """Rebuild the task lists after a software's enabled flag changed."""
+        enabled, seq_visible, self._hidden_seq, sched_visible, self._hidden_sched = (
+            self._split_tasks()
+        )
+        self.seq_list.set_softwares(enabled)
+        self.seq_list.set_tasks(seq_visible)
+        self.sched_list.set_softwares(enabled)
+        self.sched_list.set_tasks(sched_visible)
+        self.apply_mode()
+
     # -- state ---------------------------------------------------------- #
     def is_enabled(self) -> bool:
         return self.chain_switch.isChecked()
@@ -138,10 +172,10 @@ class WorkflowPanel(Panel):
         scheduled = self.mode_task_btn.isChecked()
         self.seq_box.setVisible(not scheduled)
         self.sched_box.setVisible(scheduled)
+        # 逐条模式下不提供「立即执行」；仅运行中保留按钮用于急停
+        self.btn_run.setVisible((not scheduled) or self._running)
 
     def run_list(self) -> list[str]:
-        if self.mode_task_btn.isChecked():
-            return self.sched_list.enabled_softwares(unique=False)
         return self.seq_list.enabled_softwares(unique=True)
 
     def request_run(self) -> None:
@@ -155,8 +189,8 @@ class WorkflowPanel(Panel):
             "start_slots": self.chain_times.slots(),
             "grace_minutes": int(chain.get("grace_minutes", 30) or 0),
             "state_file": chain.get("state_file", "logs/schedule_state.json"),
-            "sequential_tasks": self.seq_list.collect(),
-            "scheduled_tasks": self.sched_list.collect(),
+            "sequential_tasks": self.seq_list.collect() + list(self._hidden_seq),
+            "scheduled_tasks": self.sched_list.collect() + list(self._hidden_sched),
         }
 
     def refresh_status(self, scheduler: Scheduler) -> None:
@@ -175,6 +209,8 @@ class WorkflowPanel(Panel):
         )
 
     def set_running(self, running: bool, stopping: bool = False) -> None:
+        self._running = running or stopping
+        self.apply_mode()
         if stopping:
             self.btn_run.setEnabled(False)
             self.btn_run.setText(t("btn.stopping"))

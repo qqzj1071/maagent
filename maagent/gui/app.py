@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import subprocess
 import sys
-import threading
 from datetime import datetime
 from pathlib import Path
 
@@ -34,8 +33,10 @@ from maagent.control.monthly import MonthlyState
 from maagent.control.process import close_all
 from maagent.control.weekly import WEEKDAY_NAMES, WeeklyState
 from maagent.core import workflow_config as wc
+from maagent.core.controller import WorkflowController
 from maagent.core.scheduler import Scheduler
 from maagent.gui.config_log import config_snapshot, log_config_changes
+from maagent.gui.controller_bridge import ControllerBridge
 from maagent.gui.constants import (
     DEFAULT_HOTKEYS,
     SOFTWARE_META,
@@ -55,7 +56,6 @@ from maagent.gui.widgets import (
     set_button_role,
 )
 from maagent.gui.workflow import WorkflowPanel
-from maagent.gui.workers import WorkflowWorker
 from maagent.i18n import DEFAULT_LANGUAGE, set_language, t
 from maagent.log.logger import setup_logger
 
@@ -101,6 +101,9 @@ QTimeEdit { background: #ffffff; border: 1px solid #d0d7de; border-radius: 6px; 
 QTimeEdit:hover { border-color: #a5b4fc; }
 
 QPlainTextEdit { background: #fbfbfd; border: 1px solid #e5e7eb; border-radius: 8px; padding: 6px; color: #1f2328; }
+QLineEdit { background: #f6f7fb; border: 1px solid #e5e7eb; border-radius: 10px; padding: 9px 12px; color: #1f2328; selection-background-color: #c7d2fe; }
+QLineEdit:hover { border-color: #c7d2fe; }
+QLineEdit:focus { border-color: #4f46e5; background: #ffffff; }
 
 QScrollArea#WeeklyScroll { background: transparent; border: none; }
 QWidget#ScrollInner { background: transparent; }
@@ -136,6 +139,8 @@ QLabel#SettingsPageTitle { font-size: 22px; font-weight: 800; color: #111827; }
 QLabel#SettingsPageDesc { font-size: 13px; color: #6b7280; }
 QLabel#SettingsAboutTitle { font-size: 18px; font-weight: 700; color: #111827; }
 QFrame#SettingsCard { background: #ffffff; border: 1px solid #e5e7eb; border-radius: 12px; }
+QScrollArea#SettingsScroll, QScrollArea#SettingsScroll > QWidget, QScrollArea#SettingsScroll > QWidget > QWidget { background: transparent; border: none; }
+QWidget#SettingsPage QStackedWidget { background: transparent; }
 QLabel#SettingsField { font-size: 14px; color: #374151; }
 QLabel#SettingsSectionTitle { font-size: 14px; font-weight: 700; color: #111827; }
 QPushButton#ChoiceButton { background: #f3f4f6; border: 1px solid transparent; border-radius: 10px; color: #374151; font-size: 14px; padding: 10px; }
@@ -186,6 +191,9 @@ QTimeEdit { background: #2a2a33; border: 1px solid #45454f; border-radius: 6px; 
 QTimeEdit:hover { border-color: #6366f1; }
 
 QPlainTextEdit { background: #1b1b21; border: 1px solid #3a3a45; border-radius: 8px; padding: 6px; color: #e5e7eb; }
+QLineEdit { background: #1b1b21; border: 1px solid #3a3a45; border-radius: 10px; padding: 9px 12px; color: #e5e7eb; selection-background-color: #4338ca; }
+QLineEdit:hover { border-color: #6366f1; }
+QLineEdit:focus { border-color: #6366f1; background: #23232b; }
 
 QScrollArea#WeeklyScroll { background: transparent; border: none; }
 QWidget#ScrollInner { background: transparent; }
@@ -220,6 +228,8 @@ QLabel#SettingsPageTitle { font-size: 22px; font-weight: 800; color: #f3f4f6; }
 QLabel#SettingsPageDesc { font-size: 13px; color: #9ca3af; }
 QLabel#SettingsAboutTitle { font-size: 18px; font-weight: 700; color: #f3f4f6; }
 QFrame#SettingsCard { background: #26262e; border: 1px solid #3a3a45; border-radius: 12px; }
+QScrollArea#SettingsScroll, QScrollArea#SettingsScroll > QWidget, QScrollArea#SettingsScroll > QWidget > QWidget { background: transparent; border: none; }
+QWidget#SettingsPage QStackedWidget { background: transparent; }
 QLabel#SettingsField { font-size: 14px; color: #e5e7eb; }
 QLabel#SettingsSectionTitle { font-size: 14px; font-weight: 700; color: #f3f4f6; }
 QPushButton#ChoiceButton { background: #2a2a33; border: 1px solid #3a3a45; border-radius: 10px; color: #d1d5db; font-size: 14px; padding: 10px; }
@@ -287,8 +297,15 @@ class MaAgentWindow(QMainWindow):
         self.config = config
         self.config_path = config_path
         self.bridge = bridge
-        self.worker: WorkflowWorker | None = None
-        self.stop_event: threading.Event | None = None
+        self.controller = WorkflowController(
+            config,
+            (config.get("server", {}) or {}).get("report_file", "logs/reports.jsonl"),
+        )
+        self.controller_bridge = ControllerBridge(self.controller, self)
+        self.controller_bridge.status_changed.connect(self._on_controller_status)
+        self.controller_bridge.report_ready.connect(self._on_controller_report)
+        self._server_httpd = None
+        self._server_ctx = None
         self.cards: dict[str, SoftwareCard] = {}
         self.selected_software: str | None = None
         app_cfg = config.get("app", {}) or {}
@@ -321,6 +338,7 @@ class MaAgentWindow(QMainWindow):
         self._register_hotkeys()
         self.bridge.message.connect(self.append_log)
         self.schedule_timer.start()
+        self._start_embedded_server()
 
     def _software_defs(self) -> list[tuple[str, str, str, bool]]:
         adapters = self.config.get("adapters", {}) or {}
@@ -362,13 +380,20 @@ class MaAgentWindow(QMainWindow):
 
         top_row = QHBoxLayout()
         top_row.setContentsMargins(0, 0, 0, 0)
+        top_row.setSpacing(8)
         top_row.addStretch(1)
+        self.account_chip = QPushButton()
+        self.account_chip.setObjectName("Ghost")
+        self.account_chip.setCursor(Qt.PointingHandCursor)
+        self.account_chip.clicked.connect(self.open_account_settings)
+        top_row.addWidget(self.account_chip)
         self.btn_settings = QPushButton(t("btn.settings"))
         self.btn_settings.setObjectName("Ghost")
         self.btn_settings.setCursor(Qt.PointingHandCursor)
         self.btn_settings.clicked.connect(self.open_settings)
         top_row.addWidget(self.btn_settings)
         layout.addLayout(top_row)
+        self._update_account_chip()
 
         card_row = QHBoxLayout()
         card_row.setSpacing(10)
@@ -386,8 +411,9 @@ class MaAgentWindow(QMainWindow):
         self.cards[WORKFLOW_KEY] = self.workflow_card
         card_row.addWidget(self.workflow_card)
         for key, name, desc, enabled in self._software_defs():
-            card = SoftwareCard(key, name, desc, enabled)
+            card = SoftwareCard(key, name, desc, enabled, toggleable=key in wc.CHAIN_SOFTWARE)
             card.clicked.connect(self.select_software)
+            card.enable_toggled.connect(self._on_card_enabled)
             self.cards[key] = card
             card_row.addWidget(card)
         card_row.addStretch(1)
@@ -513,18 +539,6 @@ class MaAgentWindow(QMainWindow):
         auto_row.addWidget(self.auto_close_switch)
         left_col.addLayout(auto_row)
 
-        tray_row = QHBoxLayout()
-        tray_row.setContentsMargins(4, 0, 4, 0)
-        tray_row.setSpacing(8)
-        tray_label = QLabel(t("option.tray"))
-        tray_label.setObjectName("OptionLabel")
-        tray_row.addWidget(tray_label)
-        tray_row.addStretch(1)
-        self.tray_switch = ToggleSwitch(self.minimize_to_tray, width=38, height=20)
-        self.tray_switch.toggled.connect(self.on_option_changed)
-        tray_row.addWidget(self.tray_switch)
-        left_col.addLayout(tray_row)
-
         self.left_panel = QWidget()
         self.left_panel.setObjectName("LeftPanel")
         self.left_panel.setLayout(left_col)
@@ -569,6 +583,28 @@ class MaAgentWindow(QMainWindow):
         self.status_label = QLabel(t("status.idle"))
         self.status_label.setObjectName("StatusLabel")
         bottom.addWidget(self.status_label)
+
+        self.maaend_auto_close_row = QWidget()
+        maaend_row_layout = QHBoxLayout(self.maaend_auto_close_row)
+        maaend_row_layout.setContentsMargins(0, 0, 0, 0)
+        maaend_row_layout.setSpacing(8)
+        self.maaend_auto_close_label = QLabel(t("option.maaend_auto_close"))
+        self.maaend_auto_close_label.setObjectName("OptionLabel")
+        maaend_row_layout.addWidget(self.maaend_auto_close_label)
+        self.maaend_auto_close_switch = ToggleSwitch(
+            bool(
+                (self.config.get("adapters", {}).get("maaend", {}) or {}).get(
+                    "auto_close", False
+                )
+            ),
+            width=38,
+            height=20,
+        )
+        self.maaend_auto_close_switch.toggled.connect(self.on_option_changed)
+        maaend_row_layout.addWidget(self.maaend_auto_close_switch)
+        self.maaend_auto_close_row.setVisible(False)
+        bottom.addWidget(self.maaend_auto_close_row)
+
         bottom.addStretch(1)
         self.btn_config = QPushButton(t("btn.open_config"))
         self.btn_config.clicked.connect(self.open_config_dir)
@@ -585,6 +621,8 @@ class MaAgentWindow(QMainWindow):
         self.settings_page = SettingsPage(self.config, self.windowIcon(), self)
         self.settings_page.saved.connect(self._on_settings_saved)
         self.settings_page.cancelled.connect(self._show_main)
+        self.settings_page.account_changed.connect(self._on_account_changed)
+        self.settings_page.account_send_url.connect(self._on_send_public_url)
         self.view_stack = QStackedWidget()
         self.view_stack.addWidget(main_page)
         self.view_stack.addWidget(self.settings_page)
@@ -595,6 +633,15 @@ class MaAgentWindow(QMainWindow):
         if needs_save:
             self.save_timer.start()
         self.select_software(WORKFLOW_KEY)
+
+    def _on_card_enabled(self, key: str, enabled: bool) -> None:
+        adapters = self.config.setdefault("adapters", {})
+        adapters.setdefault(key, {})["enabled"] = bool(enabled)
+        if hasattr(self, "workflow_panel"):
+            self.workflow_panel.refresh_enabled()
+        name = SOFTWARE_META.get(key, (key, ""))[0]
+        logger.info("{} 已{}", name, "启用" if enabled else "停用")
+        self.save_timer.start()
 
     def select_software(self, key: str) -> None:
         self.selected_software = key
@@ -607,6 +654,8 @@ class MaAgentWindow(QMainWindow):
         self.monthly_panel.setVisible(is_maa)
         self.workflow_panel.setVisible(is_workflow)
         self.left_panel.setVisible(key in ("maa", WORKFLOW_KEY))
+        if hasattr(self, "maaend_auto_close_row"):
+            self.maaend_auto_close_row.setVisible(key == "maaend")
         # 工作流界面用自己的「立即执行 / 停止」，底部的关闭与开始按钮无意义
         self.btn_close.setVisible(not is_workflow)
         self.btn_start.setVisible(not is_workflow)
@@ -618,6 +667,7 @@ class MaAgentWindow(QMainWindow):
 
     def on_workflow_changed(self) -> None:
         self._sync_chain_config()
+        self.controller.emit_status()
         enabled = self.workflow_panel.is_enabled()
         self.workflow_card.set_state_text(
             t("card.schedule_on") if enabled else t("card.schedule_off"), active=enabled
@@ -626,13 +676,13 @@ class MaAgentWindow(QMainWindow):
         self.save_timer.start()
 
     def on_run_requested(self, software_list: list[str]) -> None:
-        if self.worker and self.worker.isRunning():
+        if self.controller.is_running():
             self.request_stop()
             return
         self.start_chain(software_list)
 
     def check_schedule(self) -> None:
-        if self.worker and self.worker.isRunning():
+        if self.controller.is_running():
             return
         self._sync_chain_config()
         try:
@@ -747,9 +797,12 @@ class MaAgentWindow(QMainWindow):
         workflow = self.config.setdefault("workflow", {})
         workflow["auto_close"] = self.auto_close_switch.isChecked()
         workflow["chain"] = self.workflow_panel.collect()
+        adapters = self.config.setdefault("adapters", {})
+        adapters.setdefault("maaend", {})["auto_close"] = (
+            self.maaend_auto_close_switch.isChecked()
+        )
         app_cfg = self.config.setdefault("app", {})
-        app_cfg["minimize_to_tray"] = self.tray_switch.isChecked()
-        self.minimize_to_tray = self.tray_switch.isChecked()
+        app_cfg["minimize_to_tray"] = self.minimize_to_tray
         try:
             target = self._config_write_path()
             with open(target, "w", encoding="utf-8") as f:
@@ -770,7 +823,7 @@ class MaAgentWindow(QMainWindow):
         self.log_view.appendPlainText(text)
 
     def start_daily(self) -> None:
-        if self.worker and self.worker.isRunning():
+        if self.controller.is_running():
             self.request_stop()
             return
         if self.selected_software == WORKFLOW_KEY:
@@ -782,10 +835,10 @@ class MaAgentWindow(QMainWindow):
             logger.warning("{} 未启用，无法开始", name)
             self.status_label.setText(t("status.card_disabled", name=name))
             return
-        self._launch_worker([software], chain=False)
+        self._start_controller([software], chain=False)
 
     def start_chain(self, software_list: list[str] | None = None) -> None:
-        if self.worker and self.worker.isRunning():
+        if self.controller.is_running():
             logger.warning("已有任务在运行，忽略本次工作流启动")
             return
         if software_list is None:
@@ -797,45 +850,147 @@ class MaAgentWindow(QMainWindow):
             logger.warning("日常工作流没有可执行的任务")
             self.status_label.setText(t("status.chain_empty"))
             return
-        self._launch_worker(runnable, chain=True)
+        self._start_controller(runnable, chain=True)
 
-    def _launch_worker(self, software_list: list[str], chain: bool) -> None:
-        self.stop_event = threading.Event()
-        self.btn_start.setEnabled(True)
-        self.btn_start.setText(t("btn.stop"))
-        set_button_role(self.btn_start, "Danger")
-        self.status_label.setText(
-            t("status.chain_running") if chain else t("status.running")
-        )
+    def _start_controller(self, software_list: list[str], chain: bool) -> None:
         self.report_view.clear()
+        try:
+            self.controller.start(software_list)
+        except RuntimeError as e:
+            logger.warning("{}", e)
+            self.status_label.setText(t("status.chain_empty"))
+            return
         if chain:
             self.workflow_panel.set_running(True)
             logger.info("开始日常工作流: {}", " → ".join(software_list))
-        self.worker = WorkflowWorker(self.config, software_list, self.stop_event)
-        self.worker.status.connect(self.status_label.setText)
-        self.worker.finished_report.connect(self.on_report)
-        self.worker.finished.connect(self.on_worker_finished)
-        self.worker.start()
 
     def _software_enabled(self, key: str) -> bool:
         return bool((self.config.get("adapters", {}) or {}).get(key, {}).get("enabled", False))
 
     def request_stop(self) -> None:
-        if self.stop_event is not None:
-            self.stop_event.set()
+        if not self.controller.is_running():
+            return
         self.btn_start.setEnabled(False)
         self.btn_start.setText(t("btn.stopping"))
         self.workflow_panel.set_running(True, stopping=True)
         self.status_label.setText(t("status.stopping"))
+        self.controller.stop()
         logger.warning("已请求停止日常，正在中止当前工作流")
 
-    def on_report(self, report) -> None:
-        text = report.to_text()
-        existing = self.report_view.toPlainText()
-        self.report_view.setPlainText(f"{existing}\n\n{text}" if existing else text)
-        self.report_view.verticalScrollBar().setValue(
-            self.report_view.verticalScrollBar().maximum()
+    def _on_controller_status(self, snapshot: object) -> None:
+        if not isinstance(snapshot, dict) or not hasattr(self, "btn_start"):
+            return
+        running = bool(snapshot.get("running"))
+        stopping = snapshot.get("status") == "stopping"
+        was_running = bool(getattr(self, "_was_running", False))
+        self._was_running = running
+        if running:
+            self.btn_start.setEnabled(not stopping)
+            self.btn_start.setText(t("btn.stop") if not stopping else t("btn.stopping"))
+            set_button_role(self.btn_start, "Danger")
+            self.workflow_panel.set_running(True, stopping=stopping)
+            self.status_label.setText(t("status.chain_running"))
+        else:
+            self.btn_start.setEnabled(True)
+            self.btn_start.setText(t("btn.start"))
+            set_button_role(self.btn_start, "Primary")
+            self.workflow_panel.set_running(False)
+            self.status_label.setText(t("status.idle"))
+            if was_running:
+                # a task just finished — let "接续上个任务" entries start promptly
+                QTimer.singleShot(1000, self.check_schedule)
+
+    def _on_controller_report(self, data: object) -> None:
+        if not isinstance(data, dict):
+            return
+        text = str(data.get("text") or "")
+        if text:
+            existing = self.report_view.toPlainText()
+            self.report_view.setPlainText(f"{existing}\n\n{text}" if existing else text)
+            self.report_view.verticalScrollBar().setValue(
+                self.report_view.verticalScrollBar().maximum()
+            )
+        label = str(data.get("status_label") or "")
+        if label:
+            self.notify("Maagent", t("tray.report", label=label))
+
+    def _start_embedded_server(self) -> None:
+        server_cfg = self.config.get("server", {}) or {}
+        if not server_cfg.get("enabled"):
+            return
+        if not str(server_cfg.get("account_email") or "").strip():
+            logger.info("未登录账号，暂不启动远程服务")
+            return
+        if self._server_httpd is not None:
+            return
+        try:
+            from maagent.server.app import start_server
+
+            self._server_httpd, self._server_ctx, _ = start_server(
+                self.config, self.controller
+            )
+        except Exception as e:
+            logger.error("启动远程服务失败: {}", e)
+
+    def _public_url(self) -> str:
+        server_cfg = self.config.get("server", {}) or {}
+        configured = str(server_cfg.get("public_url") or "").strip()
+        if configured:
+            return configured
+        from maagent.server.net import detect_public_url
+
+        return detect_public_url() or ""
+
+    def _send_public_url_email(self, email: str) -> None:
+        url = self._public_url()
+        if not url:
+            logger.warning("未获取到手机网页地址，无法发送域名邮件")
+            return
+        email_cfg = (self.config.get("notify", {}) or {}).get("email", {}) or {}
+        from maagent.notify.email import EmailNotifier
+
+        html = (
+            f"<p>Maagent 账号 <b>{email}</b> 已登录。</p>"
+            f"<p>手机网页地址（手机浏览器直接打开，无需 VPN）：</p>"
+            f"<p style='font-size:16px'><a href='{url}'>{url}</a></p>"
         )
+        if EmailNotifier(email_cfg).send_to(email, "Maagent 手机网页地址", html):
+            logger.info("已发送手机网页地址到 {}", email)
+
+    def _on_account_changed(self, email: str) -> None:
+        server_cfg = self.config.setdefault("server", {})
+        email = (email or "").strip()
+        server_cfg["account_email"] = email
+        self.save_settings()
+        self._update_account_chip()
+        if not email:
+            self._stop_embedded_server()
+            logger.info("已退出账号，远程服务已停止")
+            return
+        logger.info("账号已登录: {}", email)
+        self._start_embedded_server()
+        last_notified = str(server_cfg.get("last_notified_email") or "").strip()
+        if email != last_notified:
+            self._send_public_url_email(email)
+            server_cfg["last_notified_email"] = email
+            self.save_settings()
+
+    def _on_send_public_url(self) -> None:
+        email = str((self.config.get("server", {}) or {}).get("account_email") or "").strip()
+        if email:
+            self._send_public_url_email(email)
+
+    def _stop_embedded_server(self) -> None:
+        if self._server_httpd is None:
+            return
+        try:
+            from maagent.server.app import stop_server
+
+            stop_server(self._server_httpd, self._server_ctx)
+        except Exception as e:
+            logger.warning("停止远程服务失败: {}", e)
+        self._server_httpd = None
+        self._server_ctx = None
 
     def copy_report(self) -> None:
         text = self.report_view.toPlainText()
@@ -844,14 +999,6 @@ class MaAgentWindow(QMainWindow):
             return
         QApplication.clipboard().setText(text)
         logger.info("报告已复制到剪贴板")
-
-    def on_worker_finished(self) -> None:
-        self.stop_event = None
-        self.btn_start.setEnabled(True)
-        self.btn_start.setText(t("btn.start"))
-        set_button_role(self.btn_start, "Primary")
-        self.workflow_panel.set_running(False)
-        self.status_label.setText(t("status.idle"))
 
     def do_close_all(self) -> None:
         emu = self.config.get("adapters", {}).get("maa", {}).get("emulator", {})
@@ -865,6 +1012,19 @@ class MaAgentWindow(QMainWindow):
     def open_settings(self) -> None:
         self.settings_page.reload()
         self.view_stack.setCurrentWidget(self.settings_page)
+
+    def open_account_settings(self) -> None:
+        self.open_settings()
+        self.settings_page.select_page(0)
+
+    def _update_account_chip(self) -> None:
+        if not hasattr(self, "account_chip"):
+            return
+        email = str((self.config.get("server", {}) or {}).get("account_email") or "").strip()
+        self.account_chip.setText(
+            t("account.chip.logged", email=email) if email else t("account.chip.none")
+        )
+        self.account_chip.setToolTip(t("settings.tab.account"))
 
     def _show_main(self) -> None:
         self.view_stack.setCurrentIndex(0)
@@ -897,8 +1057,6 @@ class MaAgentWindow(QMainWindow):
         if settings["language"] != old_language:
             set_language(settings["language"])
             self.reload_ui()
-        elif hasattr(self, "tray_switch"):
-            self.tray_switch.setChecked(settings["minimize_to_tray"])
 
     def reload_ui(self) -> None:
         self._build_ui()
@@ -917,7 +1075,7 @@ class MaAgentWindow(QMainWindow):
             self.hotkey_stop()
 
     def hotkey_start(self) -> None:
-        if self.worker and self.worker.isRunning():
+        if self.controller.is_running():
             logger.info("快捷键：已有任务在运行")
             return
         if self.selected_software == WORKFLOW_KEY:
@@ -928,7 +1086,7 @@ class MaAgentWindow(QMainWindow):
         self.start_daily()
 
     def hotkey_stop(self) -> None:
-        if self.worker and self.worker.isRunning():
+        if self.controller.is_running():
             logger.info("快捷键：强制结束任务")
             self.request_stop()
         else:
@@ -975,7 +1133,7 @@ class MaAgentWindow(QMainWindow):
             self.tray.showMessage(title, message, QSystemTrayIcon.Information, 4000)
 
     def quit_app(self) -> None:
-        if self.worker and self.worker.isRunning():
+        if self.controller.is_running():
             self.restore_window()
             reply = QMessageBox.question(
                 self, t("quit.title"), t("quit.message"),
@@ -994,11 +1152,14 @@ class MaAgentWindow(QMainWindow):
         if self.save_timer.isActive():
             self.save_timer.stop()
             self.save_settings()
+        if self.controller.is_running():
+            self.controller.stop()
+        self._stop_embedded_server()
         if self.tray is not None:
             self.tray.hide()
 
     def closeEvent(self, event) -> None:  # noqa: N802
-        minimize = self.tray is not None and self.tray_switch.isChecked() and not self._quitting
+        minimize = self.tray is not None and self.minimize_to_tray and not self._quitting
         if minimize:
             if self.save_timer.isActive():
                 self.save_timer.stop()

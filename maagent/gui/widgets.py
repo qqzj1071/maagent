@@ -48,8 +48,17 @@ class LogBridge(QObject):
 
 class SoftwareCard(QFrame):
     clicked = Signal(str)
+    enable_toggled = Signal(str, bool)
 
-    def __init__(self, key: str, name: str, desc: str, enabled: bool, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        key: str,
+        name: str,
+        desc: str,
+        enabled: bool,
+        toggleable: bool = False,
+        parent: QWidget | None = None,
+    ) -> None:
         super().__init__(parent)
         self.key = key
         self.setObjectName("Card")
@@ -64,11 +73,18 @@ class SoftwareCard(QFrame):
         top.setSpacing(6)
         name_label = QLabel(name)
         name_label.setObjectName("CardName")
-        self.dot = QLabel("●")
-        self.dot.setStyleSheet("color: #4f46e5;" if enabled else "color: #d1d5db;")
+        self.dot: QLabel | None = None
+        self.enable_switch: ToggleSwitch | None = None
         top.addWidget(name_label)
         top.addStretch(1)
-        top.addWidget(self.dot)
+        if toggleable:
+            self.enable_switch = ToggleSwitch(enabled, width=34, height=18)
+            self.enable_switch.toggled.connect(self._on_enable_toggled)
+            top.addWidget(self.enable_switch)
+        else:
+            self.dot = QLabel("●")
+            self.dot.setStyleSheet("color: #4f46e5;" if enabled else "color: #d1d5db;")
+            top.addWidget(self.dot)
         layout.addLayout(top)
 
         desc_label = QLabel(desc)
@@ -94,7 +110,19 @@ class SoftwareCard(QFrame):
         """Update only the state label/dot colour, keeping the card clickable."""
         self.state_label.setText(text)
         self.state_label.setStyleSheet("color: #4f46e5;" if active else "color: #9ca3af;")
-        self.dot.setStyleSheet("color: #4f46e5;" if active else "color: #d1d5db;")
+        if self.dot is not None:
+            self.dot.setStyleSheet("color: #4f46e5;" if active else "color: #d1d5db;")
+
+    def _on_enable_toggled(self, value: bool) -> None:
+        self._apply_enabled(value)
+        self.enable_toggled.emit(self.key, value)
+
+    def _apply_enabled(self, value: bool) -> None:
+        self.state_label.setText(t("card.enabled") if value else t("card.disabled"))
+        self.state_label.setStyleSheet("color: #4f46e5;" if value else "color: #9ca3af;")
+        self.setProperty("inactive", not value)
+        self.style().unpolish(self)
+        self.style().polish(self)
 
     def mousePressEvent(self, event) -> None:  # noqa: N802
         self.clicked.emit(self.key)
@@ -492,9 +520,29 @@ class WorkflowTaskRow(QFrame):
         sched = QVBoxLayout(self.schedule_box)
         sched.setContentsMargins(26, 0, 0, 0)
         sched.setSpacing(6)
+
+        trigger_row = QHBoxLayout()
+        trigger_row.setSpacing(6)
+        self.trigger_time_btn = QPushButton(t("wf.trigger_time"))
+        self.trigger_after_btn = QPushButton(t("wf.trigger_after"))
+        for button in (self.trigger_time_btn, self.trigger_after_btn):
+            button.setObjectName("ModeChip")
+            button.setCheckable(True)
+            button.setCursor(Qt.PointingHandCursor)
+        self.trigger_time_btn.clicked.connect(lambda: self._set_trigger("time"))
+        self.trigger_after_btn.clicked.connect(lambda: self._set_trigger("after_previous"))
+        trigger_row.addWidget(self.trigger_time_btn)
+        trigger_row.addWidget(self.trigger_after_btn)
+        trigger_row.addStretch(1)
+        sched.addLayout(trigger_row)
+
+        self.time_box = QWidget()
+        time_box_layout = QVBoxLayout(self.time_box)
+        time_box_layout.setContentsMargins(0, 0, 0, 0)
+        time_box_layout.setSpacing(6)
         time_row = QHBoxLayout()
         time_row.setSpacing(8)
-        time_label = QLabel("定时")
+        time_label = QLabel(t("wf.trigger_time"))
         time_label.setObjectName("ToggleLabel")
         time_row.addWidget(time_label)
         self.time_edit = QTimeEdit()
@@ -506,11 +554,35 @@ class WorkflowTaskRow(QFrame):
         self.time_edit.timeChanged.connect(lambda _=None: self.changed.emit())
         time_row.addWidget(self.time_edit)
         time_row.addStretch(1)
-        sched.addLayout(time_row)
+        time_box_layout.addLayout(time_row)
         self.days = WeekdayPicker(task.get("days"))
         self.days.changed.connect(self.changed.emit)
-        sched.addWidget(self.days)
+        time_box_layout.addWidget(self.days)
+        sched.addWidget(self.time_box)
+
+        self.after_hint = QLabel(t("wf.after_hint"))
+        self.after_hint.setObjectName("Hint")
+        self.after_hint.setWordWrap(True)
+        sched.addWidget(self.after_hint)
+
+        self._trigger = str(task.get("trigger", "time"))
+        self._apply_trigger()
         outer.addWidget(self.schedule_box)
+
+    def _set_trigger(self, trigger: str) -> None:
+        self._trigger = trigger
+        self._apply_trigger()
+        self.changed.emit()
+
+    def _apply_trigger(self) -> None:
+        after = self._trigger == "after_previous"
+        self.trigger_time_btn.setChecked(not after)
+        self.trigger_after_btn.setChecked(after)
+        self.time_box.setVisible(not after)
+        self.after_hint.setVisible(after)
+
+    def trigger_mode(self) -> str:
+        return self._trigger
 
     def set_order(self, index: int) -> None:
         self.order_label.setText(str(index))
@@ -579,23 +651,40 @@ class TaskListEditor(QWidget):
         self.indicator.hide()
 
         self.add_box: QWidget | None = None
+        self._add_row: QHBoxLayout | None = None
         if self.scheduled:
             self.add_box = QWidget()
-            add_row = QHBoxLayout(self.add_box)
-            add_row.setContentsMargins(0, 0, 0, 0)
-            add_row.setSpacing(6)
-            hint = QLabel(t("wf.add_entry"))
-            hint.setObjectName("ToggleLabel")
-            add_row.addWidget(hint)
-            for key in self.softwares:
-                name = self.meta.get(key, (key.upper(), ""))[0]
-                button = QPushButton(f"＋ {name}")
-                button.setObjectName("Ghost")
-                button.setCursor(Qt.PointingHandCursor)
-                button.clicked.connect(lambda _=False, sw=key: self.add_task(sw))
-                add_row.addWidget(button)
-            add_row.addStretch(1)
+            self._add_row = QHBoxLayout(self.add_box)
+            self._add_row.setContentsMargins(0, 0, 0, 0)
+            self._add_row.setSpacing(6)
+            self._rebuild_add_buttons()
             layout.addWidget(self.add_box)
+
+    def _rebuild_add_buttons(self) -> None:
+        if self._add_row is None:
+            return
+        row = self._add_row
+        while row.count():
+            item = row.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+        hint = QLabel(t("wf.add_entry"))
+        hint.setObjectName("ToggleLabel")
+        row.addWidget(hint)
+        for key in self.softwares:
+            name = self.meta.get(key, (key.upper(), ""))[0]
+            button = QPushButton(f"＋ {name}")
+            button.setObjectName("Ghost")
+            button.setCursor(Qt.PointingHandCursor)
+            button.clicked.connect(lambda _=False, sw=key: self.add_task(sw))
+            row.addWidget(button)
+        row.addStretch(1)
+
+    def set_softwares(self, softwares: list[str]) -> None:
+        self.softwares = list(softwares)
+        if self.scheduled:
+            self._rebuild_add_buttons()
 
     # -- data ----------------------------------------------------------- #
     @staticmethod
@@ -633,6 +722,7 @@ class TaskListEditor(QWidget):
             if self.scheduled:
                 task["time"] = row.time_str()
                 task["days"] = row.selected_days()
+                task["trigger"] = row.trigger_mode()
             tasks.append(task)
         return tasks
 

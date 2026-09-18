@@ -5,6 +5,11 @@ from uuid import uuid4
 
 CHAIN_SOFTWARE = ("maa", "maaend")
 ALL_DAYS = list(range(7))
+SOFTWARE_LABELS = {"maa": "MAA", "maaend": "MaaEnd", "bgi": "BetterGI"}
+
+
+def software_label(key: str) -> str:
+    return SOFTWARE_LABELS.get(key, key)
 
 
 def new_task_id(software: str) -> str:
@@ -22,6 +27,7 @@ def normalize_task(task: dict[str, Any], scheduled: bool) -> dict[str, Any]:
     if scheduled:
         item.setdefault("time", "08:00")
         item.setdefault("days", list(ALL_DAYS))
+        item.setdefault("trigger", "time")
     return item
 
 

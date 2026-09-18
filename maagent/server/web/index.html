@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#4f46e5">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<title>Maagent 二游日常助手</title>
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" href="/icon.png">
+<link rel="apple-touch-icon" href="/icon.png">
+<link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+<div id="app">
+
+  <section id="authView" class="view">
+    <header class="brand">
+      <img src="/icon.png" alt="" class="logo">
+      <h1>Maagent</h1>
+      <p class="sub">二游日常助手 · 远程控制</p>
+    </header>
+    <div class="tabs">
+      <button class="tab active" data-auth="login" type="button">登录</button>
+      <button class="tab" data-auth="register" type="button">注册</button>
+    </div>
+
+    <form id="loginForm" class="card">
+      <label>邮箱或手机号
+        <input id="loginAccount" type="text" autocomplete="username" required>
+      </label>
+      <label>密码
+        <input id="loginPassword" type="password" autocomplete="current-password" required>
+      </label>
+      <button class="primary" type="submit">登录</button>
+      <p class="msg" id="loginMsg"></p>
+    </form>
+
+    <form id="registerForm" class="card hidden">
+      <label>邮箱
+        <input id="regEmail" type="email" autocomplete="email" required>
+      </label>
+      <label>手机号（可选）
+        <input id="regPhone" type="tel" placeholder="仅作账号标识，不发短信">
+      </label>
+      <label>密码
+        <input id="regPassword" type="password" autocomplete="new-password" required placeholder="至少 8 位">
+      </label>
+      <label>邮箱验证码
+        <span class="row">
+          <input id="regCode" type="text" inputmode="numeric" required>
+          <button type="button" id="sendCodeBtn" class="ghost">发送验证码</button>
+        </span>
+      </label>
+      <button class="primary" type="submit">注册并登录</button>
+      <p class="msg" id="regMsg"></p>
+    </form>
+  </section>
+
+  <section id="mainView" class="view hidden">
+    <header class="topbar">
+      <span class="title">Maagent</span>
+      <span class="who" id="whoami"></span>
+      <button id="logoutBtn" class="ghost small" type="button">退出</button>
+    </header>
+    <nav class="tabs">
+      <button class="tab active" data-tab="status" type="button">状态</button>
+      <button class="tab" data-tab="logs" type="button">日志</button>
+      <button class="tab" data-tab="reports" type="button">报告</button>
+    </nav>
+    <main>
+      <div id="tab-status" class="panel">
+        <div class="card">
+          <div class="status-line">
+            <span id="statusDot" class="dot"></span>
+            <span id="statusText">空闲</span>
+          </div>
+          <div class="muted" id="statusMessage"></div>
+          <dl class="kv" id="statusKv"></dl>
+        </div>
+        <div class="actions">
+          <button id="startBtn" class="primary" type="button">启动日常</button>
+          <button id="stopBtn" class="danger" type="button" disabled>停止</button>
+        </div>
+        <h3 class="section-title">任务清单</h3>
+        <div id="softwareList" class="list"></div>
+      </div>
+
+      <div id="tab-logs" class="panel hidden">
+        <pre id="logView" class="logs"></pre>
+      </div>
+
+      <div id="tab-reports" class="panel hidden">
+        <div id="reportList" class="list"></div>
+      </div>
+    </main>
+  </section>
+
+</div>
+
+<div id="modal" class="modal hidden">
+  <div class="modal-box">
+    <div class="modal-head">
+      <strong id="modalTitle">任务报告</strong>
+      <button id="modalClose" class="ghost small" type="button">关闭</button>
+    </div>
+    <div class="modal-body" id="modalBody"></div>
+  </div>
+</div>
+
+<div id="toast" class="toast hidden"></div>
+<script src="/app.js"></script>
+</body>
+</html>

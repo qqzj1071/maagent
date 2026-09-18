@@ -251,8 +251,26 @@ class Scheduler:
                 )
             return events
 
-        for index, task in enumerate(self.enabled_tasks()):
+        enabled = self.enabled_tasks()
+        for index, task in enumerate(enabled):
             task_id = self.task_id(task, index)
+            if task.get("trigger") == "after_previous":
+                if index == 0 or self._task_ran_today(task_id, today):
+                    continue
+                prev_id = self.task_id(enabled[index - 1], index - 1)
+                if not self._task_ran_today(prev_id, today):
+                    continue
+                events.append(
+                    ScheduleEvent(
+                        "task",
+                        task["software"],
+                        [task["software"]],
+                        now,
+                        f"{task['software']} 接续上个任务",
+                        task_id=task_id,
+                    )
+                )
+                continue
             start = parse_hhmm(task.get("time"))
             days = self._days(task.get("days"))
             if start is None or weekday not in days:
@@ -294,6 +312,8 @@ class Scheduler:
                     candidates.append(self._next_datetime(now, start, days))
         else:
             for task in self.enabled_tasks():
+                if task.get("trigger") == "after_previous":
+                    continue
                 start = parse_hhmm(task.get("time"))
                 days = self._days(task.get("days"))
                 if start is None or not days:

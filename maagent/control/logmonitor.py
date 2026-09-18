@@ -204,9 +204,6 @@ class MaaLogMonitor:
                 errors.append(ln)
         return errors, warnings
 
-    def detect_errors(self) -> list[str]:
-        return self.classify()[0]
-
     def _alive(self) -> bool:
         return bool(win32gui.IsWindow(self.hwnd))
 

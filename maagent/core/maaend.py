@@ -60,6 +60,9 @@ class MaaEndOrchestrator(BaseWorkflow):
     def _on_stop(self) -> None:
         self._stop_task()
 
+    def _auto_close_enabled(self) -> bool:
+        return bool(self.cfg.get("auto_close", False))
+
     def _auto_close(self) -> None:
         logger.info("任务完成，关闭 MaaEnd 与终末地")
         close_maa(PROCESS_NAME)

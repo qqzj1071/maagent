@@ -24,6 +24,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--monitor", action="store_true", help="监控并自动关闭 MAA 弹窗")
     parser.add_argument("--close", action="store_true", help="关闭 MAA 与模拟器")
     parser.add_argument("--seconds", type=float, default=60, help="监控时长（秒）")
+    parser.add_argument("--serve", action="store_true", help="启动账号/远程控制 HTTP 服务")
+    parser.add_argument("--serve-host", default=None, help="覆盖服务监听地址")
+    parser.add_argument("--serve-port", type=int, default=None, help="覆盖服务监听端口")
     args = parser.parse_args(argv)
 
     default_config = Path(__file__).resolve().parent.parent / "config" / "config.yaml"
@@ -31,6 +34,11 @@ def main(argv: list[str] | None = None) -> int:
     cfg = load_config(config_path)
     setup_logger(log_dir=cfg.get("app", {}).get("log_dir", "logs"))
     logger.info("已加载配置 {}", config_path)
+
+    if args.serve:
+        from maagent.server.app import serve
+
+        return serve(cfg, host=args.serve_host, port=args.serve_port)
 
     maa_cfg = cfg["adapters"]["maa"]
 
