@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import threading
 import time
-from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -39,12 +38,8 @@ from maagent.control.weekly import (
     parse_annihilation,
     today_runs_annihilation,
 )
-from maagent.notify.email import EmailNotifier
+from maagent.core.base import BaseWorkflow
 from maagent.report.generator import RunReport, format_duration
-
-
-def _now() -> str:
-    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
 def _hms_to_sec(hms: str) -> int:
@@ -52,16 +47,11 @@ def _hms_to_sec(hms: str) -> int:
     return h * 3600 + m * 60 + s
 
 
-class WorkflowStopped(Exception):
-    """Raised when the user requests an emergency stop."""
-
-
-class Orchestrator:
+class Orchestrator(BaseWorkflow):
     def __init__(
         self, config: dict[str, Any], stop_event: threading.Event | None = None
     ) -> None:
-        self.config = config
-        self._stop = stop_event
+        super().__init__(config, stop_event)
         self._monitor: MaaPopupMonitor | None = None
         self._logmon: MaaLogMonitor | None = None
         weekly_cfg = config.get("weekly", {}) or {}
@@ -69,9 +59,8 @@ class Orchestrator:
         monthly_cfg = config.get("monthly", {}) or {}
         self.monthly_state = MonthlyState(monthly_cfg.get("state_file", "logs/monthly_state.json"))
 
-    def _check_stop(self) -> None:
-        if self._stop is not None and self._stop.is_set():
-            raise WorkflowStopped()
+    def _on_stop(self) -> None:
+        self._stop_maa_task()
 
     def _stop_maa_task(self) -> None:
         """Emergency stop: click MAA's 停止 button to abort the running daily."""
@@ -110,41 +99,11 @@ class Orchestrator:
         except Exception as e:
             logger.warning("急停：停止 MAA 任务失败: {}", e)
 
-    def run_daily(self) -> RunReport:
-        started = time.time()
-        try:
-            return self._run_daily(started)
-        except WorkflowStopped:
-            logger.warning("收到急停请求，已中止工作流")
-            wf = self.config.get("workflow", {})
-            report = RunReport(game=wf.get("game", "明日方舟"), started_at=_now())
-            report.status = "stopped"
-            report.finished_at = _now()
-            report.duration = format_duration(time.time() - started)
-            report.errors.append("用户急停，工作流已中止")
-            if self._logmon is not None:
-                report.logs = self._logmon.logs
-                self._populate_from_logs(report)
-            self._stop_maa_task()
-            return self._finish(report, started, auto_close=False)
-        except Exception as e:
-            logger.exception("工作流异常: {}", e)
-            wf = self.config.get("workflow", {})
-            report = RunReport(game=wf.get("game", "明日方舟"), started_at=_now())
-            report.status = "failed"
-            report.finished_at = _now()
-            report.duration = format_duration(time.time() - started)
-            report.errors.append(f"异常: {e}")
-            if self._logmon is not None:
-                report.logs = self._logmon.logs
-            return self._finish(report, started, auto_close=False)
-
-    def _run_daily(self, started: float) -> RunReport:
+    def _run(self, report: RunReport) -> None:
         maa_cfg = self.config["adapters"]["maa"]
         pm_cfg = maa_cfg.get("popup_monitor", {})
         emu_cfg = maa_cfg.get("emulator", {})
         wf = self.config.get("workflow", {})
-        report = RunReport(game=wf.get("game", "明日方舟"), started_at=_now())
 
         logger.info("=== 步骤 1/8: 清理残留 MAA 与模拟器 ===")
         if wf.get("clean_start"):
@@ -156,13 +115,13 @@ class Orchestrator:
         if not adapter.launch():
             report.status = "failed"
             report.errors.append("启动 MAA 失败")
-            return self._finish(report, started)
+            return
 
         hwnd = self._wait_main_window(wf.get("window_timeout", 40))
         if hwnd is None:
             report.status = "failed"
             report.errors.append("未找到 MAA 主窗口")
-            return self._finish(report, started)
+            return
 
         monitor = MaaPopupMonitor(
             debug_dir=pm_cfg.get("debug_dir"),
@@ -189,7 +148,7 @@ class Orchestrator:
             report.errors.append("Link Start 后日常任务未成功开始")
             report.popups_closed = monitor.closed
             report.logs = logmon.logs
-            return self._finish(report, started)
+            return
         logger.info("日常任务已开始运行")
 
         logger.info("=== 步骤 6/8: 监控日志与弹窗，等待日常完成 ===")
@@ -236,8 +195,6 @@ class Orchestrator:
             report.monthly = format_monthly(monthly_result)
         except Exception as e:
             logger.warning("月常处理异常: {}", e)
-
-        return self._finish(report, started)
 
     def _anni_cap(self) -> int:
         cfg = annihilation_config(self.config.get("weekly", {}))
@@ -346,27 +303,6 @@ class Orchestrator:
             report.sanity = f"{sanity[0]}/{sanity[1]}"
             report.next_deadline = compute_next_deadline(end_t, sanity[0], sanity[1])
 
-    def _finish(
-        self, report: RunReport, started: float, auto_close: bool = True
-    ) -> RunReport:
-        logger.info("=== 步骤 8/8: 生成报告并发送邮件 ===")
-        if not report.finished_at:
-            report.finished_at = _now()
-        if not report.duration:
-            report.duration = format_duration(time.time() - started)
-
-        email_cfg = self.config.get("notify", {}).get("email", {})
-        notifier = EmailNotifier(email_cfg)
-        subject = f"[maagent] {report.game}日常 - {report.status_label}"
-        notifier.send(subject, report.to_html())
-
-        logger.info("报告:\n{}", report.to_text())
-
-        if auto_close and self.config.get("workflow", {}).get("auto_close"):
-            logger.info("任务完成，自动关闭 MAA 与模拟器")
-            try:
-                close_all(self.config.get("adapters", {}).get("maa", {}).get("emulator", {}))
-            except Exception as e:
-                logger.warning("自动关闭 MAA 与模拟器失败: {}", e)
-
-        return report
+    def _auto_close(self) -> None:
+        logger.info("任务完成，自动关闭 MAA 与模拟器")
+        close_all(self.config.get("adapters", {}).get("maa", {}).get("emulator", {}))

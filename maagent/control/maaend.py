@@ -1,9 +1,7 @@
 from __future__ import annotations
 
 import time
-from typing import Any
 
-import psutil
 import win32api
 import win32con
 import win32gui
@@ -12,6 +10,7 @@ from PIL import Image, ImageGrab
 
 from maagent.control.popup import (
     _click_screen,
+    crop_region,
     ensure_visible,
     find_text,
     main_window,
@@ -29,17 +28,6 @@ STOP_HOTKEY = "F11"
 START_BUTTON_REGION = (0.52, 0.86, 1.0, 1.0)
 START_LABELS = ("开始任务", "开始")
 STOP_LABELS = ("停止任务", "停止")
-
-
-def process_running(name: str) -> bool:
-    target = name.lower()
-    for proc in psutil.process_iter(["name"]):
-        try:
-            if (proc.info.get("name") or "").lower() == target:
-                return True
-        except Exception:
-            continue
-    return False
 
 
 def vk_for(name: str) -> int | None:
@@ -63,12 +51,6 @@ def press_hotkey(name: str) -> bool:
     time.sleep(0.05)
     win32api.keybd_event(vk, 0, win32con.KEYEVENTF_KEYUP, 0)
     return True
-
-
-def _region(image: Image.Image, frac: tuple[float, float, float, float]):
-    w, h = image.size
-    l, t, r, b = frac
-    return int(l * w), int(t * h), int(r * w), int(b * h)
 
 
 def capture_window_screen(hwnd: int) -> Image.Image | None:
@@ -116,20 +98,22 @@ class MaaEndUI:
         self.foreground(hwnd)
         try:
             img = capture_window_screen(hwnd)
-            if img is not None:
-                l, t, r, b = _region(img, START_BUTTON_REGION)
-                items = recognize(img.crop((l, t, r, b)))
-                item = None
-                for name in START_LABELS:
-                    item = find_text(items, name)
-                    if item is not None:
-                        break
+            if img is None:
+                return False
+            l, t, r, b = crop_region(img, START_BUTTON_REGION)
+            items = recognize(img.crop((l, t, r, b)))
+            item = None
+            for name in START_LABELS:
+                item = find_text(items, name)
                 if item is not None:
-                    wx, wy, _, _ = win32gui.GetWindowRect(hwnd)
-                    _click_screen(wx + l + item.center[0], wy + t + item.center[1])
-                    logger.info("MaaEnd：已点击「开始任务」")
-                    return True
+                    break
+            if item is None:
                 logger.warning("MaaEnd：未识别到「开始任务」按钮")
+                return False
+            wx, wy, _, _ = win32gui.GetWindowRect(hwnd)
+            _click_screen(wx + l + item.center[0], wy + t + item.center[1])
+            logger.info("MaaEnd：已点击「开始任务」")
+            return True
         except Exception as e:
             logger.warning("MaaEnd：点击「开始任务」失败: {}", e)
-        return False
+            return False

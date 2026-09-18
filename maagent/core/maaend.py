@@ -1,9 +1,7 @@
 from __future__ import annotations
 
-import ctypes
 import json
 import re
-import subprocess
 import threading
 import time
 from datetime import datetime, timedelta
@@ -19,13 +17,11 @@ from maagent.control.maaend import (
     STOP_HOTKEY,
     MaaEndUI,
     press_hotkey,
-    process_running,
 )
-from maagent.control.process import close_maa
 from maagent.control.maaend_api import DEFAULT_PORT, MaaEndApi
-from maagent.core.orchestrator import WorkflowStopped
-from maagent.notify.email import EmailNotifier
-from maagent.report.generator import RunReport, format_duration
+from maagent.control.process import close_maa, process_running, spawn
+from maagent.core.base import BaseWorkflow
+from maagent.report.generator import RunReport
 
 GAME_NAME = "明日方舟：终末地"
 ERROR_TYPES = {"error", "warning", "warn"}
@@ -38,50 +34,7 @@ SHOP_ITEMS = {
     "item_diamond": "嵌晶玉",
 }
 
-SW_SHOWNORMAL = 1
-ERROR_ELEVATION_REQUIRED = 740
-
-
-def _now() -> str:
-    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-
-def is_elevated() -> bool:
-    try:
-        return bool(ctypes.windll.shell32.IsUserAnAdmin())
-    except Exception:
-        return False
-
-
-def shell_execute_runas(program: str, args: str = "", cwd: str | None = None) -> bool:
-    try:
-        res = ctypes.windll.shell32.ShellExecuteW(
-            None, "runas", program, args or None, cwd, SW_SHOWNORMAL
-        )
-        return int(res) > 32
-    except Exception as e:
-        logger.warning("提权启动失败 {}: {}", program, e)
-        return False
-
-
-def spawn(program: str, args: str = "", cwd: str | None = None,
-          prefer_elevated: bool = False) -> str | None:
-    """Launch a program, escalating via UAC only when really needed."""
-    if prefer_elevated and not is_elevated():
-        return "runas" if shell_execute_runas(program, args, cwd) else None
-    try:
-        cmd = [program] + (args.split() if args else [])
-        subprocess.Popen(cmd, cwd=cwd)
-        return "normal"
-    except OSError as e:
-        if getattr(e, "winerror", None) == ERROR_ELEVATION_REQUIRED:
-            logger.info("{} 需要管理员权限，请求提权...", Path(program).name)
-            return "runas" if shell_execute_runas(program, args, cwd) else None
-        logger.warning("启动 {} 失败: {}", program, e)
-        return None
-
-
-class MaaEndOrchestrator:
+class MaaEndOrchestrator(BaseWorkflow):
     """Runs 明日方舟：终末地 dailies by letting MaaEnd do the work.
 
     maagent only opens MaaEnd and triggers its 开始任务 (F10, or a click as a
@@ -93,40 +46,27 @@ class MaaEndOrchestrator:
     runs elevated too (Windows UIPI blocks a lower-integrity process).
     """
 
+    steps = 5
+
     def __init__(
         self, config: dict[str, Any], stop_event: threading.Event | None = None
     ) -> None:
-        self.config = config
-        self._stop = stop_event
+        super().__init__(config, stop_event)
         self.cfg = (config.get("adapters", {}) or {}).get("maaend", {}) or {}
 
-    def _check_stop(self) -> None:
-        if self._stop is not None and self._stop.is_set():
-            raise WorkflowStopped()
+    def _game_name(self) -> str:
+        return GAME_NAME
+
+    def _on_stop(self) -> None:
+        self._stop_task()
+
+    def _auto_close(self) -> None:
+        logger.info("任务完成，关闭 MaaEnd 与终末地")
+        close_maa(PROCESS_NAME)
+        close_maa(GAME_PROCESS)
 
     def _api(self) -> MaaEndApi:
         return MaaEndApi(port=int(self.cfg.get("web_port", DEFAULT_PORT)))
-
-    def run_daily(self) -> RunReport:
-        started = time.time()
-        report = RunReport(game=GAME_NAME, started_at=_now())
-        try:
-            self._run(report)
-        except WorkflowStopped:
-            logger.warning("收到停止请求，已中止终末地工作流")
-            self._stop_task()
-            report.status = "stopped"
-            report.errors.append("用户停止，工作流已中止")
-        except Exception as e:
-            logger.exception("终末地工作流异常: {}", e)
-            report.status = "failed"
-            report.errors.append(f"异常: {e}")
-        if not report.finished_at:
-            report.finished_at = _now()
-        if not report.duration:
-            report.duration = format_duration(time.time() - started)
-        self._finish(report)
-        return report
 
     # ------------------------------------------------------------------ #
     def _run(self, report: RunReport) -> None:
@@ -445,19 +385,3 @@ class MaaEndOrchestrator:
             logger.info("终末地：已发送热键 {} 停止任务", STOP_HOTKEY)
         except Exception as e:
             logger.warning("终末地：停止任务失败: {}", e)
-
-    def _finish(self, report: RunReport) -> None:
-        logger.info("=== 终末地：生成报告并发送邮件 ===")
-        email_cfg = self.config.get("notify", {}).get("email", {})
-        EmailNotifier(email_cfg).send(
-            f"[maagent] {report.game}日常 - {report.status_label}", report.to_html()
-        )
-        logger.info("报告:\n{}", report.to_text())
-
-        if self.config.get("workflow", {}).get("auto_close"):
-            logger.info("任务完成，关闭 MaaEnd 与终末地")
-            try:
-                close_maa(PROCESS_NAME)
-                close_maa(GAME_PROCESS)
-            except Exception as e:
-                logger.warning("关闭 MaaEnd 失败: {}", e)

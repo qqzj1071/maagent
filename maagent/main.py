@@ -2,20 +2,15 @@ import argparse
 import sys
 from pathlib import Path
 
-import yaml
 from loguru import logger
 
 from maagent.adapters.maa import MaaAdapter
+from maagent.config import load_config
 from maagent.control.popup import MaaPopupMonitor
 from maagent.control.process import close_all
 from maagent.core.maaend import MaaEndOrchestrator
 from maagent.core.orchestrator import Orchestrator
 from maagent.log.logger import setup_logger
-
-
-def load_config(path: str) -> dict:
-    with open(path, "r", encoding="utf-8") as f:
-        return yaml.safe_load(f)
 
 
 def main(argv: list[str] | None = None) -> int:

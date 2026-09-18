@@ -1,15 +1,14 @@
 from __future__ import annotations
 
-import json
 import re
 import time
 from datetime import datetime
-from pathlib import Path
 from typing import Any
 
 import win32gui
 from loguru import logger
 
+from maagent.control.state import JsonState
 from maagent.control.popup import (
     _click_screen,
     _force_foreground,
@@ -68,6 +67,45 @@ def _task_checkbox(image, task_name: str) -> tuple[bool | None, tuple[int, int] 
     return _checkbox_state(image, TASK_CHECKBOX_X, cy), (TASK_CHECKBOX_X, cy)
 
 
+def _toggle_checkbox(
+    hwnd: int,
+    probe,
+    enabled: bool,
+    name: str,
+    action_on: str,
+    action_off: str,
+    retries: int = 3,
+    settle: float = 1.0,
+) -> tuple[bool, bool | None, bool | None]:
+    """Click a checkbox until it matches ``enabled``; ``probe(image)`` -> (state, point)."""
+    before: bool | None = None
+    after: bool | None = None
+    for attempt in range(1, retries + 1):
+        image = capture_window(hwnd)
+        if image is None:
+            time.sleep(1.0)
+            continue
+        state, point = probe(image)
+        if before is None:
+            before = state
+        if state is None or point is None:
+            logger.warning("周常：未识别到{}", name)
+            time.sleep(1.0)
+            continue
+        if state == enabled:
+            logger.info("周常：{}已是{}状态", name, action_on if enabled else action_off)
+            return True, before, state
+        l, t, _, _ = win32gui.GetWindowRect(hwnd)
+        _click_screen(l + point[0], t + point[1])
+        time.sleep(settle)
+        after = probe(capture_window(hwnd))[0]
+        if after == enabled:
+            logger.info("周常：已{}{}", action_on if enabled else action_off, name)
+            return True, before, after
+        logger.warning("周常：第 {} 次切换{}未生效（当前 {}）", attempt, name, after)
+    return False, before, after
+
+
 # --------------------------------------------------------------------------- #
 # MAA controls
 # --------------------------------------------------------------------------- #
@@ -94,84 +132,32 @@ class MaaWeeklyPotion:
         time.sleep(1.2)
         return True
 
-    def read_state(self, hwnd: int) -> bool | None:
-        image = capture_window(hwnd)
-        if image is None:
-            return None
-        return _potion_checkbox(image)[0]
-
-    def set_state(self, hwnd: int, enabled: bool, retries: int = 3) -> tuple[bool, bool | None, bool | None]:
-        """Return (ok, before, after)."""
-        before: bool | None = None
-        after: bool | None = None
-        for attempt in range(1, retries + 1):
-            image = capture_window(hwnd)
-            if image is None:
-                time.sleep(1.0)
-                continue
-            state, point = _potion_checkbox(image)
-            if before is None:
-                before = state
-            if state is None or point is None:
-                logger.warning("周常：未识别到「{}」选项", POTION_LABEL)
-                time.sleep(1.0)
-                continue
-            if state == enabled:
-                logger.info("周常：「{}」已是{}状态", POTION_LABEL, "开启" if enabled else "关闭")
-                return True, before, state
-            l, t, _, _ = win32gui.GetWindowRect(hwnd)
-            _click_screen(l + point[0], t + point[1])
-            time.sleep(1.2)
-            after = self.read_state(hwnd)
-            if after == enabled:
-                logger.info("周常：已{}「{}」", "开启" if enabled else "关闭", POTION_LABEL)
-                return True, before, after
-            logger.warning("周常：第 {} 次切换未生效（当前 {}）", attempt, after)
-        return False, before, after
+    def set_state(
+        self, hwnd: int, enabled: bool, retries: int = 3
+    ) -> tuple[bool, bool | None, bool | None]:
+        return _toggle_checkbox(
+            hwnd, _potion_checkbox, enabled, f"「{POTION_LABEL}」", "开启", "关闭", retries, 1.2
+        )
 
 
 class MaaTaskToggle:
     """Read/toggle a task row's enable checkbox in MAA's task list."""
 
-    def read_state(self, hwnd: int, task_name: str) -> bool | None:
-        image = capture_window(hwnd)
-        if image is None:
-            return None
-        return _task_checkbox(image, task_name)[0]
-
     def set_state(
         self, hwnd: int, task_name: str, enabled: bool, retries: int = 3
     ) -> tuple[bool, bool | None, bool | None]:
-        """Return (ok, before, after)."""
         ensure_visible(hwnd)
         _force_foreground(hwnd)
         time.sleep(0.8)
-        before: bool | None = None
-        after: bool | None = None
-        for attempt in range(1, retries + 1):
-            image = capture_window(hwnd)
-            if image is None:
-                time.sleep(1.0)
-                continue
-            state, point = _task_checkbox(image, task_name)
-            if before is None:
-                before = state
-            if state is None or point is None:
-                logger.warning("周常：未识别到任务「{}」", task_name)
-                time.sleep(1.0)
-                continue
-            if state == enabled:
-                logger.info("周常：任务「{}」已是{}状态", task_name, "勾选" if enabled else "未勾选")
-                return True, before, state
-            l, t, _, _ = win32gui.GetWindowRect(hwnd)
-            _click_screen(l + point[0], t + point[1])
-            time.sleep(1.0)
-            after = self.read_state(hwnd, task_name)
-            if after == enabled:
-                logger.info("周常：已{}任务「{}」", "勾选" if enabled else "取消勾选", task_name)
-                return True, before, after
-            logger.warning("周常：第 {} 次切换「{}」未生效（当前 {}）", attempt, task_name, after)
-        return False, before, after
+        return _toggle_checkbox(
+            hwnd,
+            lambda image: _task_checkbox(image, task_name),
+            enabled,
+            f"任务「{task_name}」",
+            "勾选",
+            "取消勾选",
+            retries,
+        )
 
 
 # --------------------------------------------------------------------------- #
@@ -183,33 +169,14 @@ def current_week_key(now: datetime | None = None) -> str:
     return f"{iso[0]}-W{iso[1]:02d}"
 
 
-class WeeklyState:
-    """Tracks weekly progress (currently: annihilation runs / sanity) on disk."""
-
-    def __init__(self, path: str | Path = DEFAULT_STATE_FILE) -> None:
-        self.path = Path(path)
-        self.data: dict[str, Any] = {}
-        try:
-            self.data = json.loads(self.path.read_text(encoding="utf-8"))
-        except Exception:
-            self.data = {}
+class WeeklyState(JsonState):
+    """Tracks weekly progress (currently: annihilation) on disk."""
 
     def _anni(self) -> dict[str, Any]:
-        week = current_week_key()
-        anni = self.data.get("annihilation") or {}
-        if anni.get("week") != week:
-            anni = {"week": week, "progress": 0, "done": False}
-            self.data["annihilation"] = anni
-        return anni
-
-    def _save(self) -> None:
-        try:
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            self.path.write_text(
-                json.dumps(self.data, ensure_ascii=False, indent=2), encoding="utf-8"
-            )
-        except Exception as e:
-            logger.warning("周常：保存进度失败 {}", e)
+        bucket = self._period_bucket(
+            current_week_key(), {"annihilation": {"progress": 0, "done": False}}
+        )
+        return bucket["annihilation"]
 
     def annihilation(self) -> dict[str, Any]:
         return self._anni()
@@ -223,7 +190,7 @@ class WeeklyState:
         anni["progress"] = max(anni.get("progress", 0), int(progress))
         if anni["progress"] >= cap:
             anni["done"] = True
-        self._save()
+        self.save()
         return anni
 
 

@@ -10,7 +10,7 @@ import win32gui
 from loguru import logger
 from PIL import Image
 
-from maagent.control.popup import capture_window, recognize
+from maagent.control.popup import capture_window, crop_region, recognize
 
 SANITY_RECOVER_MINUTES = 6
 
@@ -131,9 +131,7 @@ class MaaLogMonitor:
         img = capture_window(self.hwnd)
         if img is None:
             return None
-        w, h = img.size
-        l, t, r, b = region
-        return img.crop((int(l * w), int(t * h), int(r * w), int(b * h)))
+        return img.crop(crop_region(img, region))
 
     def read_logs(self) -> list[str]:
         img = self._crop(LOG_REGION)

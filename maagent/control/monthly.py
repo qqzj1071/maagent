@@ -1,9 +1,7 @@
 from __future__ import annotations
 
-import json
 import time
 from datetime import datetime
-from pathlib import Path
 from typing import Any, Callable
 
 import win32gui
@@ -14,11 +12,13 @@ from maagent.control.popup import (
     _click_screen,
     _force_foreground,
     capture_window,
+    crop_region,
     ensure_visible,
     find_text,
     main_window,
     recognize,
 )
+from maagent.control.state import JsonState
 
 TAB_TOOL = "小工具"
 TOOL_NIUZA = "牛杂"
@@ -44,12 +44,6 @@ BUTTON_REGION = (0.05, 0.82, 0.32, 0.98)
 DEFAULT_STATE_FILE = "logs/monthly_state.json"
 DEFAULT_TIMEOUT = 900
 DEFAULT_START_TIMEOUT = 90
-
-
-def _crop_region(image, region: tuple[float, float, float, float]):
-    w, h = image.size
-    l, t, r, b = region
-    return int(l * w), int(t * h), int(r * w), int(b * h)
 
 
 class MaaToolNavigator:
@@ -79,7 +73,7 @@ class MaaToolNavigator:
         if image is None:
             logger.warning("月常：无法截取 MAA 窗口")
             return False
-        l, t, r, b = _crop_region(image, region)
+        l, t, r, b = crop_region(image, region)
         items = recognize(image.crop((l, t, r, b)))
         item = None
         for candidate in (text,) if isinstance(text, str) else text:
@@ -206,37 +200,20 @@ def current_month_key(now: datetime | None = None) -> str:
     return f"{now.year}-{now.month:02d}"
 
 
-class MonthlyState:
+class MonthlyState(JsonState):
     """Tracks whether each store has been bought this month."""
 
-    def __init__(self, path: str | Path = DEFAULT_STATE_FILE) -> None:
-        self.path = Path(path)
-        try:
-            self.data: dict[str, Any] = json.loads(self.path.read_text(encoding="utf-8"))
-        except Exception:
-            self.data = {}
-
     def _bucket(self) -> dict[str, Any]:
-        month = current_month_key()
-        if self.data.get("month") != month:
-            self.data = {"month": month, "green": False, "yellow": False}
-        return self.data
+        return self._period_bucket(
+            current_month_key(), {"green": False, "yellow": False}
+        )
 
     def is_done(self, key: str) -> bool:
         return bool(self._bucket().get(key, False))
 
     def mark_done(self, key: str) -> None:
         self._bucket()[key] = True
-        self._save()
-
-    def _save(self) -> None:
-        try:
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            self.path.write_text(
-                json.dumps(self.data, ensure_ascii=False, indent=2), encoding="utf-8"
-            )
-        except Exception as e:
-            logger.warning("月常：保存进度失败 {}", e)
+        self.save()
 
 
 # --------------------------------------------------------------------------- #

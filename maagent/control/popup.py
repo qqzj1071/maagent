@@ -232,6 +232,15 @@ def find_text(items: list[OcrItem], text: str) -> OcrItem | None:
     return None
 
 
+def crop_region(
+    image: Image.Image, region: tuple[float, float, float, float]
+) -> tuple[int, int, int, int]:
+    """Turn a fractional region into pixel bounds (l, t, r, b) for ``image``."""
+    w, h = image.size
+    l, t, r, b = region
+    return int(l * w), int(t * h), int(r * w), int(b * h)
+
+
 def ensure_visible(hwnd: int) -> None:
     """Restore a minimized window so capture works (some apps ignore SW_RESTORE)."""
     try:
