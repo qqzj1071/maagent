@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 import time
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Any, Callable
 
 import win32gui
@@ -54,6 +55,9 @@ def compute_next_deadline(
 LOG_REGION = (0.655, 0.15, 0.995, 0.98)
 BUTTON_REGION = (0.10, 0.83, 0.29, 0.97)
 
+# MAA's gui.log completion markers (its own wording, not the panel's)
+GUI_FINISH_MARKERS = ("任务已全部完成", "全部任务已完成", "全部完成")
+
 RUNNING_KEYWORDS = ["停止", "中止"]
 IDLE_KEYWORDS = ["Link", "Start", "开始"]
 START_KEYWORDS = ["连接成功", "开始任务", "开始唤醒", "理智作战", "基建换班"]
@@ -79,11 +83,49 @@ def _group_lines(items: list[Any]) -> list[str]:
 
 
 class MaaLogMonitor:
-    def __init__(self, hwnd: int, debug_dir: str | None = None) -> None:
+    def __init__(
+        self, hwnd: int, debug_dir: str | None = None, gui_log: str | Path | None = None
+    ) -> None:
         self.hwnd = hwnd
         self.debug_dir = debug_dir
         self.logs: list[str] = []
         self._seen: set[str] = set()
+        self._gui_log = Path(gui_log) if gui_log else None
+        self._gui_offset = 0
+
+    def mark_gui_log(self) -> None:
+        """Remember the current end of MAA's gui.log so only new lines are read."""
+        if self._gui_log and self._gui_log.exists():
+            try:
+                self._gui_offset = self._gui_log.stat().st_size
+            except Exception:
+                self._gui_offset = 0
+
+    def gui_log_finished(self) -> bool:
+        """Fallback completion check from MAA's own log (panel OCR can miss it).
+
+        MAA writes gui.log in the system ANSI code page (GBK on zh-CN) and the
+        completion line is 「任务已全部完成！」, so match raw bytes for both
+        GBK and UTF-8 to stay encoding-agnostic.
+        """
+        if not self._gui_log or not self._gui_log.exists():
+            return False
+        try:
+            size = self._gui_log.stat().st_size
+            start = self._gui_offset if size >= self._gui_offset else 0
+            with open(self._gui_log, "rb") as f:
+                f.seek(start)
+                data = f.read()
+        except Exception:
+            return False
+        for marker in GUI_FINISH_MARKERS:
+            for enc in ("gbk", "utf-8"):
+                try:
+                    if marker.encode(enc) in data:
+                        return True
+                except Exception:
+                    pass
+        return False
 
     def _crop(self, region: tuple[float, float, float, float]) -> Image.Image | None:
         img = capture_window(self.hwnd)
@@ -155,7 +197,7 @@ class MaaLogMonitor:
             self.collect_logs()
             if on_poll is not None:
                 on_poll()
-            if self.detect_complete():
+            if self.detect_complete() or self.gui_log_finished():
                 return "complete"
             if self.button_state() == "idle":
                 return "idle"

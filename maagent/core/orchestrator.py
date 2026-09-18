@@ -3,6 +3,7 @@ from __future__ import annotations
 import threading
 import time
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 import win32gui
@@ -167,7 +168,9 @@ class Orchestrator:
             debug_dir=pm_cfg.get("debug_dir"),
             dismiss_checkbox=pm_cfg.get("dismiss_checkbox", False),
         )
-        logmon = MaaLogMonitor(hwnd)
+        gui_log = Path(maa_cfg.get("path", "")) / "debug" / "gui.log"
+        logmon = MaaLogMonitor(hwnd, gui_log=gui_log)
+        logmon.mark_gui_log()
         self._monitor = monitor
         self._logmon = logmon
 
