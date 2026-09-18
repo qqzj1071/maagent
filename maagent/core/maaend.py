@@ -13,6 +13,7 @@ from typing import Any
 from loguru import logger
 
 from maagent.control.maaend import (
+    GAME_PROCESS,
     PROCESS_NAME,
     START_HOTKEY,
     STOP_HOTKEY,
@@ -20,6 +21,7 @@ from maagent.control.maaend import (
     press_hotkey,
     process_running,
 )
+from maagent.control.process import close_maa
 from maagent.control.maaend_api import DEFAULT_PORT, MaaEndApi
 from maagent.core.orchestrator import WorkflowStopped
 from maagent.notify.email import EmailNotifier
@@ -162,7 +164,11 @@ class MaaEndOrchestrator:
             return
 
         logger.info("=== 终末地 步骤 3/5: 等待任务完成 ===")
-        result = self._wait_done(api, instance_id, float(cfg.get("task_timeout_seconds", 3600)))
+        result = self._wait_done(
+            api, instance_id, since,
+            float(cfg.get("game_start_timeout", 240)),
+            float(cfg.get("task_timeout_seconds", 3600)),
+        )
 
         logger.info("=== 终末地 步骤 4/5: 汇总日志并生成报告 ===")
         time.sleep(2)
@@ -177,8 +183,13 @@ class MaaEndOrchestrator:
             report.errors.append(
                 f"终末地任务超过 {cfg.get('task_timeout_seconds', 3600)} 秒未结束"
             )
+        elif result == "not_started":
+            report.status = "failed"
+            report.errors.append("任务未能启动（控制器未连接或提交失败）")
         elif report.errors:
             report.status = "failed"
+        elif report.warnings:
+            report.status = "warning"
         else:
             report.status = "success"
 
@@ -249,29 +260,67 @@ class MaaEndOrchestrator:
             logger.warning("终末地：启用全局热键失败: {}", e)
 
     def _trigger_start(self, api: MaaEndApi, instance_id: str, timeout: float) -> bool:
+        since = self._last_log_timestamp(api, instance_id)
         logger.info("终末地：发送热键 {}", START_HOTKEY)
         press_hotkey(START_HOTKEY)
-        if self._wait_running(api, instance_id, min(timeout, 45)):
+        if self._wait_started(api, instance_id, since, min(timeout, 30)):
             return True
         logger.info("终末地：热键未生效，尝试点击「开始任务」按钮")
-        if MaaEndUI().press_start() and self._wait_running(api, instance_id, 45):
+        since = self._last_log_timestamp(api, instance_id)
+        if MaaEndUI().press_start() and self._wait_started(api, instance_id, since, 30):
             return True
         return False
 
-    def _wait_running(self, api: MaaEndApi, instance_id: str, timeout: float) -> bool:
+    @staticmethod
+    def _new_messages(api: MaaEndApi, instance_id: str, since: str) -> list[str]:
+        try:
+            entries = (api.logs() or {}).get(instance_id) or []
+        except Exception:
+            return []
+        return [
+            str(e.get("message") or "")
+            for e in entries
+            if str(e.get("timestamp", "")) > since
+        ]
+
+    def _wait_started(
+        self, api: MaaEndApi, instance_id: str, since: str, timeout: float
+    ) -> bool:
+        """MaaEnd logs 检测到快捷键 / 正在执行前置程序 as soon as it accepts the start."""
+        markers = ("检测到快捷键", "正在执行前置程序", "任务开始")
         deadline = time.time() + timeout
         while time.time() < deadline:
             self._check_stop()
+            if any(any(k in m for k in markers) for m in self._new_messages(api, instance_id, since)):
+                logger.info("终末地：MaaEnd 已接受开始任务")
+                return True
+            time.sleep(2.0)
+        return False
+
+    def _wait_done(
+        self, api: MaaEndApi, instance_id: str, since: str,
+        start_timeout: float, timeout: float,
+    ) -> str:
+        """The game must boot (preAction → window → connect → resource) before the
+        task actually runs, which can take a minute or two."""
+        start_deadline = time.time() + start_timeout
+        running = False
+        while time.time() < start_deadline:
+            self._check_stop()
+            if any("结束进程" in m and "完成" in m for m in self._new_messages(api, instance_id, since)):
+                logger.info("终末地：任务已结束")
+                return "complete"
             try:
                 if api.instance_state(instance_id).get("is_running"):
-                    logger.info("终末地：任务已开始")
-                    return True
+                    running = True
+                    break
             except Exception:
                 pass
             time.sleep(3.0)
-        return False
+        if not running:
+            logger.warning("终末地：等待任务进入运行状态超时")
+            return "not_started"
 
-    def _wait_done(self, api: MaaEndApi, instance_id: str, timeout: float) -> str:
         logger.info("终末地：任务运行中，等待结束...")
         deadline = time.time() + timeout
         while time.time() < deadline:
@@ -328,20 +377,31 @@ class MaaEndOrchestrator:
                     continue
                 for match in re.finditer(r"当前理智\s*(\d+)\s*/\s*(\d+)", text):
                     details["sanity"] = (int(match.group(1)), int(match.group(2)))
+                # fallback source for the 未来可期 count
+                for match in re.finditer(r"未来可期」命中：\s*(\d+)\s*个", text):
+                    details["essence"] = int(match.group(1))
         return details
 
     @classmethod
     def _populate(
         cls, report: RunReport, entries: list[dict[str, Any]], log_dir: str | None
     ) -> None:
-        errors: list[str] = []
+        errors: list[str] = []      # fatal: the run itself could not proceed
+        warnings: list[str] = []    # a single sub-task hiccup; the run still completed
         for entry in entries:
             message = str(entry.get("message") or "").strip()
             if not message:
                 continue
-            if entry.get("type") in ERROR_TYPES or any(k in message for k in ERROR_KEYWORDS):
-                errors.append(message.replace("\n", " "))
+            message = message.replace("\n", " ")
+            task = re.match(r"任务(?:失败|出错)[:：]\s*(.+)", message)
+            if task:
+                warnings.append(f"{task.group(1).strip()} 执行异常")
+            elif "任务失败" in message or "任务出错" in message:
+                warnings.append(message)
+            elif entry.get("type") in ERROR_TYPES or any(k in message for k in ERROR_KEYWORDS):
+                errors.append(message)
         report.errors = errors[:20]
+        report.warnings = warnings[:20]
         report.logs = [f"{e.get('timestamp','')} {e.get('message','')}" for e in entries]
 
         details = cls._collect_details(log_dir)
@@ -358,23 +418,24 @@ class MaaEndOrchestrator:
 
         # 基质刷取：未来可期
         essence = details.get("essence")
-        essence_note = ""
+        extra.append((
+            "基质刷取",
+            f"未来可期 {essence} 个" if essence is not None else "未来可期 未获取到数据",
+        ))
+
+        # 理智：不足 160 时用理智药剂（每个 +40）补到能双倍领取为止
         sanity = details.get("sanity")
         if sanity:
             current, maximum = sanity
-            # 理智不足 160 时用理智药剂（每个 +40）补到能双倍领取为止
             potions = 0 if current >= 160 else -(-(160 - current) // 40)
             effective = current + 40 * potions
             remaining = max(0, effective - 160)
-            if potions:
-                essence_note = f"（使用 {potions} 个药剂恢复理智）"
-            report.sanity = f"{remaining}/{maximum}"
+            note = f"（使用 {potions} 个药剂恢复理智）" if potions else ""
+            report.sanity = f"{remaining}/{maximum}{note}"
             next_dt = datetime.now() + timedelta(
                 seconds=(maximum - remaining) * SANITY_RECOVER_SECONDS
             )
             report.next_deadline = next_dt.strftime("%m-%d %H:%M")
-        if essence is not None:
-            extra.append(("基质刷取", f"未来可期 {essence} 个{essence_note}"))
 
         report.extra = extra
 
@@ -392,3 +453,11 @@ class MaaEndOrchestrator:
             f"[maagent] {report.game}日常 - {report.status_label}", report.to_html()
         )
         logger.info("报告:\n{}", report.to_text())
+
+        if self.config.get("workflow", {}).get("auto_close"):
+            logger.info("任务完成，关闭 MaaEnd 与终末地")
+            try:
+                close_maa(PROCESS_NAME)
+                close_maa(GAME_PROCESS)
+            except Exception as e:
+                logger.warning("关闭 MaaEnd 失败: {}", e)

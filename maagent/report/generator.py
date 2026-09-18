@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 
 STATUS_LABEL = {
     "success": "✅ 成功",
+    "warning": "⚠️ 完成（子任务报错）",
     "failed": "❌ 失败",
     "timeout": "⏱️ 超时",
     "stopped": "⏹️ 已急停",
@@ -12,6 +13,7 @@ STATUS_LABEL = {
 
 STATUS_COLOR = {
     "success": "#2e7d32",
+    "warning": "#ef6c00",
     "failed": "#c62828",
     "timeout": "#ef6c00",
     "stopped": "#6b7280",
@@ -37,6 +39,7 @@ class RunReport:
     finished_at: str = ""
     duration: str = ""
     errors: list[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
     sanity: str = ""
     next_deadline: str = ""
     annihilation: str = ""
@@ -58,6 +61,8 @@ class RunReport:
             ("耗时", self.duration or "未知", False),
             ("报错", "无" if not self.errors else "；".join(self.errors), bool(self.errors)),
         ]
+        if self.warnings:
+            rows.append(("提示", "；".join(self.warnings), False))
         rows.extend((label, value, False) for label, value in self.extra)
         if self.tasks:
             rows.append(("完成任务", self.tasks, False))
