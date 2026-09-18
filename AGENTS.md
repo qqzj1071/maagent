@@ -11,9 +11,10 @@ project skill: `.opencode/skills/maagent-dev/SKILL.md`.
 
 - Full workflow: `.venv\Scripts\python.exe -m maagent.main --daily`
 - Quick test run: `.venv\Scripts\python.exe -m maagent.main --config config/config.test.yaml --daily`
+- Daily workflow chain: `.venv\Scripts\python.exe -m maagent.main --workflow`
 - Start MAA + Link Start only: `.venv\Scripts\python.exe -m maagent.main --run`
 - Close MAA + emulator: `.venv\Scripts\python.exe -m maagent.main --close`
-- Verify imports: `.venv\Scripts\python.exe -c "import maagent.main, maagent.core.orchestrator, maagent.control.popup, maagent.control.logmonitor, maagent.gui.app; print('OK')"`
+- Verify imports: `.venv\Scripts\python.exe -c "import maagent.main, maagent.core.orchestrator, maagent.core.scheduler, maagent.control.popup, maagent.control.logmonitor, maagent.gui.app; print('OK')"`
 
 ## Rules
 

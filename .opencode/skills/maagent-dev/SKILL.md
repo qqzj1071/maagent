@@ -25,9 +25,11 @@ maagent/                 # Python package
     maaend_api.py        # MaaEnd HTTP API client + MXU pipeline_override computation
   core/orchestrator.py   # the MAA --daily workflow
   core/maaend.py         # the MaaEnd (终末地) --maaend workflow
+  core/scheduler.py      # 日常工作流 chain schedule (sequential / per-task, persisted state)
   report/generator.py    # concise report (start/end, errors, sanity, next deadline)
   notify/email.py        # SMTP (QQ) ; notify/wechat.py (stub)
-  gui/app.py             # PySide6 GUI (entry for the exe)
+  gui/app.py             # PySide6 GUI (entry for the exe) + ChainWorker
+  gui/widgets.py         # SoftwareCard / ToggleSwitch / CollapsibleSection / WeekdayPicker / WorkflowTaskRow
   log/logger.py
 config/                  # config.yaml (gitignored), config.example.yaml, config.test.yaml
 scripts/                 # make_icon.py, monitor_daily.py
@@ -46,6 +48,7 @@ dist/maagent.exe         # built artifact (gitignored)
 
 ```
 .venv\Scripts\python.exe -m maagent.main --daily            # full workflow
+.venv\Scripts\python.exe -m maagent.main --workflow         # run the configured chain now
 .venv\Scripts\python.exe -m maagent.main --launch           # only start MAA
 .venv\Scripts\python.exe -m maagent.main --run              # start MAA + Link Start
 .venv\Scripts\python.exe -m maagent.main --monitor --seconds 3600
@@ -72,6 +75,47 @@ send email.
   (one purchase per calendar month).
 - OCR quirks: the button reads `LinkStart!` (no space); the tab reads `键长草`
   (drops `一`). Match with candidate tuples, not exact strings.
+
+## 日常工作流 (GUI card + `core/scheduler.py`)
+
+- The first card opens a panel that orders the daily tasks and schedules them.
+  Config lives at `workflow.chain`: `enabled`, `mode` (`sequential` |
+  `scheduled`), `start_slots` (list of `{time, days}` — each time has its own run
+  days; legacy single `start_time` / `start_times` + chain `days` still read),
+  `grace_minutes`, `state_file`, plus **two independent task lists**:
+  `sequential_tasks` (`id`/`software`/`enabled`, one per software) and
+  `scheduled_tasks` (`id`/`software`/`enabled`/`time`/`days`, duplicable). The old
+  shared `tasks` list is migrated by `_legacy_split` / `Scheduler._task_lists`.
+- **Both timing modes**: `sequential` = every `start_slots` entry runs the whole
+  enabled chain in `sequential_tasks` order on its own days (deduped per time per
+  day); `scheduled` = each `scheduled_tasks` entry fires at its own time/days.
+  `TimeListEditor` edits the start slots (time + a **large** `WeekdayPicker`).
+- **The two lists are independent** and both live in `TaskListEditor` widgets
+  (`MaAgentWindow.seq_list` / `.sched_list`). Only the scheduled list allows
+  copy/delete/add (each software keeps ≥1 entry, last delete button disabled);
+  the sequential list is one-per-software and reorder-only. `按顺序立即执行` runs
+  `seq_list.enabled_softwares()` via `ChainWorker`.
+- Drag the `≡` grip (`DragHandle`) to reorder. This is a **manual drag, not Qt
+  QDrag/drop** (a child label never gives the parent row the implicit mouse grab,
+  so DnD was unreliable): the grip emits `drag_started/moved/ended(payload,
+  globalPos)`, and `TaskListEditor` computes the insert index from the cursor Y
+  (`_compute_drop_index`), shows a `DropIndicator` line before/after the hovered
+  row (including after the last row — the layout has 6px top/bottom margins so
+  the line isn't clipped), then reorders on release.
+- On load, `_chain_needs_save()` triggers a save when the stored chain lacks
+  `start_times` or stable task `id`s, so per-day dedup keys stay stable across
+  restarts.
+- `Scheduler` is pure logic (no Qt): the GUI `QTimer` polls every 20s, calls
+  `poll()` → `mark(event)`, and only starts a run when no `ChainWorker` is busy.
+  Fired events are persisted per-day in `logs/schedule_state.json` so they never
+  repeat. `grace_minutes` (default 30) allows a late run if the app was busy.
+- `enabled` is read from the config dict, so `on_workflow_changed` calls
+  `_sync_chain_config()` to push UI state into config before `next_run()`/`poll()`
+  (otherwise the 5s-debounced autosave makes the status lag).
+- An **empty `days` list means "never"** (only `None`/missing means every day) —
+  see `Scheduler._days`.
+- Only MAA/MaaEnd are in the chain (BetterGI is still a stub); `--workflow` runs
+  the configured chain headlessly for testing.
 
 ## MaaEnd (终末地) — `--maaend`
 

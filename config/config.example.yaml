@@ -13,6 +13,32 @@ workflow:
   poll_interval: 10
   clean_start: true
   auto_close: false            # 任务完成并发送报告后，自动关闭 MAA 与模拟器
+  chain:                       # 日常工作流（编排顺序 + 定时执行）
+    enabled: false             # 定时总开关
+    mode: sequential           # sequential=整链定时 | scheduled=逐条定时
+    start_slots:               # 整链模式：每个启动时间点各自绑定运行日
+      - time: "08:00"          # 该时间点
+        days: [0, 1, 2, 3, 4, 5, 6]  # 该时间点运行的星期（周一=0 ... 周日=6）
+    grace_minutes: 30          # 错过时间后的补跑窗口（分钟）
+    state_file: logs/schedule_state.json
+    sequential_tasks:          # 整链模式：每个日常仅一条，列表顺序即执行顺序
+      - id: maa-1              # 稳定 id（用于跨重启保持）
+        software: maa
+        enabled: true
+      - id: maaend-1
+        software: maaend
+        enabled: true
+    scheduled_tasks:           # 逐条模式：可复制同一条目并各自设置时间/星期
+      - id: maa-1              # 复制后需唯一，用于按天去重
+        software: maa
+        enabled: true
+        time: "08:00"
+        days: [0, 1, 2, 3, 4, 5, 6]
+      - id: maaend-1
+        software: maaend
+        enabled: true
+        time: "10:00"
+        days: [0, 1, 2, 3, 4, 5, 6]
 
 weekly:
   enabled: true                # 周常总开关

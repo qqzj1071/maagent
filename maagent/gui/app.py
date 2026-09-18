@@ -5,6 +5,7 @@ import sys
 import threading
 from datetime import datetime
 from pathlib import Path
+from uuid import uuid4
 
 import yaml
 from loguru import logger
@@ -31,11 +32,14 @@ from maagent.control.process import close_all
 from maagent.control.weekly import WEEKDAY_NAMES, WeeklyState
 from maagent.core.maaend import MaaEndOrchestrator
 from maagent.core.orchestrator import Orchestrator
+from maagent.core.scheduler import Scheduler
 from maagent.gui.widgets import (
     CollapsibleSection,
     LogBridge,
     Panel,
     SoftwareCard,
+    TaskListEditor,
+    TimeListEditor,
     ToggleSwitch,
 )
 from maagent.log.logger import setup_logger
@@ -45,6 +49,11 @@ SOFTWARE_META: dict[str, tuple[str, str]] = {
     "maaend": ("MaaEnd", "明日方舟：终末地"),
     "bgi": ("BetterGI", "原神"),
 }
+
+WORKFLOW_KEY = "workflow"
+WORKFLOW_NAME = "日常工作流"
+WORKFLOW_DESC = "编排顺序 · 定时执行"
+CHAIN_SOFTWARE = ("maa", "maaend")
 
 LIGHT_QSS = """
 QWidget { font-size: 14px; }
@@ -56,7 +65,7 @@ QLabel#StatusLabel { color: #57606a; font-size: 14px; }
 QFrame#Card { background: #ffffff; border: 1px solid #e5e7eb; border-radius: 10px; }
 QFrame#Card:hover { border-color: #c7d2fe; background: #f8faff; }
 QFrame#Card[selected="true"] { border: 2px solid #4f46e5; background: #eef2ff; }
-QFrame#Card[enabled="false"] { background: #fafafa; border-color: #eceff3; }
+QFrame#Card[inactive="true"] { background: #fafafa; border-color: #eceff3; }
 QLabel#CardName { font-size: 15px; font-weight: 700; color: #111827; }
 QLabel#CardDesc { font-size: 12px; color: #6b7280; }
 QLabel#CardState { font-size: 11px; }
@@ -74,6 +83,18 @@ QLabel#OptionLabel { color: #6b7280; font-size: 12px; }
 QPushButton#DayChip { background: #ffffff; border: 1px solid #d0d7de; color: #374151; padding: 7px 0; border-radius: 8px; font-size: 14px; }
 QPushButton#DayChip:hover { border-color: #a5b4fc; background: #f8faff; }
 QPushButton#DayChip:checked { background: #4f46e5; border-color: #4f46e5; color: #ffffff; font-weight: 600; }
+QPushButton#ModeChip { background: #ffffff; border: 1px solid #d0d7de; color: #374151; padding: 6px 14px; border-radius: 8px; font-size: 13px; }
+QPushButton#ModeChip:hover { border-color: #a5b4fc; background: #f8faff; }
+QPushButton#ModeChip:checked { background: #4f46e5; border-color: #4f46e5; color: #ffffff; font-weight: 600; }
+
+QFrame#TaskRow { background: #fbfbfd; border: 1px solid #eceff3; border-radius: 8px; }
+QFrame#TaskRow[dragging="true"] { background: #eef2ff; border: 1px solid #a5b4fc; }
+QFrame#DropIndicator { background: #4f46e5; border-radius: 1px; }
+QLabel#TaskOrder { color: #4f46e5; font-weight: 700; font-size: 13px; }
+QLabel#DragHandle { color: #b6bec9; font-size: 16px; font-weight: 700; }
+QLabel#DragHandle:hover { color: #4f46e5; }
+QTimeEdit { background: #ffffff; border: 1px solid #d0d7de; border-radius: 6px; padding: 3px 6px; color: #1f2328; }
+QTimeEdit:hover { border-color: #a5b4fc; }
 
 QPlainTextEdit { background: #fbfbfd; border: 1px solid #e5e7eb; border-radius: 8px; padding: 6px; color: #1f2328; }
 
@@ -98,6 +119,7 @@ QPushButton#Danger:hover { background: #b91c1c; }
 QPushButton#Danger:disabled { background: #f0a3a3; border-color: #f0a3a3; color: #ffffff; }
 QPushButton#Ghost { background: transparent; border: none; color: #6b7280; padding: 4px 10px; border-radius: 6px; font-size: 13px; }
 QPushButton#Ghost:hover { background: #f3f4f6; color: #4f46e5; }
+QPushButton#Ghost:disabled { color: #d8dee6; }
 """
 
 
@@ -158,6 +180,44 @@ class DailyWorker(QThread):
             self.status.emit(f"状态: 异常 - {e}")
 
 
+class ChainWorker(QThread):
+    """Runs several daily workflows sequentially (the 日常工作流 chain)."""
+
+    status = Signal(str)
+    finished_report = Signal(object)
+
+    def __init__(
+        self,
+        config: dict,
+        stop_event: threading.Event | None,
+        software_list: list[str],
+    ) -> None:
+        super().__init__()
+        self.config = config
+        self.stop_event = stop_event
+        self.software_list = software_list
+
+    def run(self) -> None:
+        total = len(self.software_list)
+        for index, software in enumerate(self.software_list, 1):
+            if self.stop_event is not None and self.stop_event.is_set():
+                break
+            name = SOFTWARE_META.get(software, (software, ""))[0]
+            self.status.emit(f"状态: 运行中... ({index}/{total}) {name}")
+            logger.info("=== 日常工作流 {}/{}: {} ===", index, total, name)
+            try:
+                if software == "maaend":
+                    runner = MaaEndOrchestrator(self.config, stop_event=self.stop_event)
+                else:
+                    runner = Orchestrator(self.config, stop_event=self.stop_event)
+                report = runner.run_daily()
+                self.finished_report.emit(report)
+                if report.status == "stopped":
+                    break
+            except Exception as e:
+                logger.exception("{} 工作流异常: {}", name, e)
+
+
 class MaAgentWindow(QMainWindow):
     def __init__(self, config: dict, config_path: Path, bridge: LogBridge) -> None:
         super().__init__()
@@ -168,12 +228,23 @@ class MaAgentWindow(QMainWindow):
         self.stop_event: threading.Event | None = None
         self.cards: dict[str, SoftwareCard] = {}
         self.selected_software: str | None = None
+
+        self.scheduler = Scheduler(
+            config,
+            (config.get("workflow", {}) or {}).get("chain", {}).get(
+                "state_file", "logs/schedule_state.json"
+            ),
+        )
         self.save_timer = QTimer(self)
         self.save_timer.setSingleShot(True)
         self.save_timer.setInterval(5000)
         self.save_timer.timeout.connect(self.save_settings)
+        self.schedule_timer = QTimer(self)
+        self.schedule_timer.setInterval(20000)
+        self.schedule_timer.timeout.connect(self.check_schedule)
         self._build_ui()
         self.bridge.message.connect(self.append_log)
+        self.schedule_timer.start()
 
     def _software_defs(self) -> list[tuple[str, str, str, bool]]:
         adapters = self.config.get("adapters", {}) or {}
@@ -212,12 +283,18 @@ class MaAgentWindow(QMainWindow):
         layout.setContentsMargins(18, 16, 18, 16)
         layout.setSpacing(10)
 
-        section = QLabel("可调用软件")
-        section.setObjectName("SectionTitle")
-        layout.addWidget(section)
-
         card_row = QHBoxLayout()
         card_row.setSpacing(10)
+        chain_enabled = bool(
+            (self.config.get("workflow", {}) or {}).get("chain", {}).get("enabled", False)
+        )
+        self.workflow_card = SoftwareCard(WORKFLOW_KEY, WORKFLOW_NAME, WORKFLOW_DESC, True)
+        self.workflow_card.set_state_text(
+            "定时已开" if chain_enabled else "定时已关", active=chain_enabled
+        )
+        self.workflow_card.clicked.connect(self.select_software)
+        self.cards[WORKFLOW_KEY] = self.workflow_card
+        card_row.addWidget(self.workflow_card)
         for key, name, desc, enabled in self._software_defs():
             card = SoftwareCard(key, name, desc, enabled)
             card.clicked.connect(self.select_software)
@@ -246,7 +323,8 @@ class MaAgentWindow(QMainWindow):
         inner.setSpacing(12)
         scroll.setWidget(scroll_inner)
 
-        weekly_panel = Panel("周常")
+        self.weekly_panel = Panel("周常")
+        weekly_panel = self.weekly_panel
         potion_cfg = self.config.get("weekly", {}).get("potion") or {}
         potion_section = CollapsibleSection("体力药使用", enabled=bool(potion_cfg.get("enabled", False)))
         self.potion_section = potion_section
@@ -293,7 +371,8 @@ class MaAgentWindow(QMainWindow):
         weekly_panel.add_widget(anni_section)
         inner.addWidget(weekly_panel)
 
-        monthly_panel = Panel("月常")
+        self.monthly_panel = Panel("月常")
+        monthly_panel = self.monthly_panel
         self.monthly_sections: dict[str, CollapsibleSection] = {}
         self.monthly_status: dict[str, QLabel] = {}
         monthly_cfg = self.config.get("monthly", {}) or {}
@@ -316,6 +395,9 @@ class MaAgentWindow(QMainWindow):
             self.monthly_status[key] = status
             monthly_panel.add_widget(section)
         inner.addWidget(monthly_panel)
+
+        self.workflow_panel = self._build_workflow_panel()
+        inner.addWidget(self.workflow_panel)
         inner.addStretch(1)
         left_col.addWidget(scroll, 1)
 
@@ -342,6 +424,7 @@ class MaAgentWindow(QMainWindow):
         self.update_weekly_status()
         self.update_annihilation_status()
         self.update_monthly_status()
+        self.update_schedule_status()
 
         right_col = QVBoxLayout()
         right_col.setSpacing(12)
@@ -393,16 +476,284 @@ class MaAgentWindow(QMainWindow):
 
         self.setCentralWidget(central)
 
-        default = next((k for k in ("maa", "maaend", "bgi") if k in self.cards), None)
-        if default:
-            self.select_software(default)
+        needs_save = self._chain_needs_save()
+        self._sync_chain_config()
+        if needs_save:
+            self.save_timer.start()
+        self.select_software(WORKFLOW_KEY)
+
+    def _chain_cfg(self) -> dict:
+        return (self.config.get("workflow", {}) or {}).get("chain", {}) or {}
+
+    @staticmethod
+    def _new_task_id(software: str) -> str:
+        return f"{software}-{uuid4().hex[:6]}"
+
+    def _config_start_slots(self) -> list[dict]:
+        chain = self._chain_cfg()
+        raw = chain.get("start_slots")
+        if raw is None:
+            days = chain.get("days")
+            if days is None:
+                days = list(range(7))
+            times = chain.get("start_times")
+            if times is None:
+                single = chain.get("start_time")
+                times = [single] if single else []
+            if not isinstance(times, list):
+                times = [times]
+            raw = [{"time": str(t), "days": list(days)} for t in times]
+        if not raw:
+            raw = [{"time": "08:00", "days": list(range(7))}]
+        return raw
+
+    def _normalize_task(self, task: dict, scheduled: bool) -> dict:
+        item = dict(task)
+        item["id"] = str(item.get("id") or self._new_task_id(item["software"]))
+        item.setdefault("enabled", True)
+        if scheduled:
+            item.setdefault("time", "08:00")
+            item.setdefault("days", list(range(7)))
+        return item
+
+    def _legacy_split(self, chain: dict) -> tuple[list[dict], list[dict]]:
+        """Split the old shared ``tasks`` list into (sequential, scheduled)."""
+        seq: list[dict] = []
+        sched: list[dict] = []
+        seen: set[str] = set()
+        for item in chain.get("tasks") or []:
+            if not isinstance(item, dict) or item.get("software") not in CHAIN_SOFTWARE:
+                continue
+            sched.append(item)
+            key = item["software"]
+            if key not in seen:
+                seen.add(key)
+                seq.append(
+                    {"id": item.get("id"), "software": key, "enabled": item.get("enabled", True)}
+                )
+        return seq, sched
+
+    def _config_sequential_tasks(self) -> list[dict]:
+        chain = self._chain_cfg()
+        raw = chain.get("sequential_tasks")
+        if raw is None:
+            raw, _ = self._legacy_split(chain)
+        tasks: list[dict] = []
+        seen: set[str] = set()
+        for item in raw:
+            if not isinstance(item, dict) or item.get("software") not in CHAIN_SOFTWARE:
+                continue
+            key = item["software"]
+            if key in seen:
+                continue
+            seen.add(key)
+            tasks.append(self._normalize_task(item, False))
+        for key in CHAIN_SOFTWARE:
+            if key not in seen:
+                tasks.append({"id": self._new_task_id(key), "software": key, "enabled": True})
+        return tasks
+
+    def _config_scheduled_tasks(self) -> list[dict]:
+        chain = self._chain_cfg()
+        raw = chain.get("scheduled_tasks")
+        if raw is None:
+            _, raw = self._legacy_split(chain)
+        tasks = [
+            self._normalize_task(item, True)
+            for item in raw
+            if isinstance(item, dict) and item.get("software") in CHAIN_SOFTWARE
+        ]
+        present = {t["software"] for t in tasks}
+        for key in CHAIN_SOFTWARE:
+            if key not in present:
+                tasks.append(self._normalize_task({"software": key}, True))
+        return tasks
+
+    def _build_workflow_panel(self) -> QWidget:
+        chain = self._chain_cfg()
+        panel = Panel(WORKFLOW_NAME)
+        hint = QLabel(
+            "编排各日常的执行顺序，并按日程表定时自动执行。\n"
+            "整链定时：到点后按顺序依次跑完所有已启用任务；"
+            "逐条定时：每条任务按各自的时间与星期单独触发。"
+        )
+        hint.setObjectName("Hint")
+        hint.setWordWrap(True)
+        panel.add_widget(hint)
+
+        enable_row = QHBoxLayout()
+        enable_label = QLabel("启用定时")
+        enable_label.setObjectName("OptionLabel")
+        enable_row.addWidget(enable_label)
+        enable_row.addStretch(1)
+        self.chain_switch = ToggleSwitch(bool(chain.get("enabled", False)), width=38, height=20)
+        self.chain_switch.toggled.connect(self.on_workflow_changed)
+        enable_row.addWidget(self.chain_switch)
+        panel.add_layout(enable_row)
+
+        mode_row = QHBoxLayout()
+        mode_label = QLabel("定时方式")
+        mode_label.setObjectName("OptionLabel")
+        mode_row.addWidget(mode_label)
+        self.mode_seq_btn = QPushButton("整链定时")
+        self.mode_task_btn = QPushButton("逐条定时")
+        for btn in (self.mode_seq_btn, self.mode_task_btn):
+            btn.setObjectName("ModeChip")
+            btn.setCheckable(True)
+            btn.setCursor(Qt.PointingHandCursor)
+        self.mode_seq_btn.clicked.connect(lambda: self.set_workflow_mode("sequential"))
+        self.mode_task_btn.clicked.connect(lambda: self.set_workflow_mode("scheduled"))
+        mode_row.addWidget(self.mode_seq_btn)
+        mode_row.addWidget(self.mode_task_btn)
+        mode_row.addStretch(1)
+        panel.add_layout(mode_row)
+
+        self.seq_box = QWidget()
+        seq_layout = QVBoxLayout(self.seq_box)
+        seq_layout.setContentsMargins(0, 0, 0, 0)
+        seq_layout.setSpacing(6)
+        times_label = QLabel("启动时间与运行日（可添加多个时间，每个时间点按顺序跑一遍）")
+        times_label.setObjectName("ToggleLabel")
+        seq_layout.addWidget(times_label)
+        self.chain_times = TimeListEditor(self._config_start_slots())
+        self.chain_times.changed.connect(self.on_workflow_changed)
+        seq_layout.addWidget(self.chain_times)
+        seq_tasks_label = QLabel("执行顺序（每个日常仅一条，按住 ≡ 拖动调整顺序）")
+        seq_tasks_label.setObjectName("Hint")
+        seq_layout.addWidget(seq_tasks_label)
+        self.seq_list = TaskListEditor(False, SOFTWARE_META, list(CHAIN_SOFTWARE))
+        self.seq_list.changed.connect(self.on_workflow_changed)
+        self.seq_list.set_tasks(self._config_sequential_tasks())
+        seq_layout.addWidget(self.seq_list)
+        panel.add_widget(self.seq_box)
+
+        self.sched_box = QWidget()
+        sched_layout = QVBoxLayout(self.sched_box)
+        sched_layout.setContentsMargins(0, 0, 0, 0)
+        sched_layout.setSpacing(6)
+        sched_hint = QLabel("每条任务按各自的时间与星期单独触发；可复制条目设置不同时间。")
+        sched_hint.setObjectName("Hint")
+        sched_hint.setWordWrap(True)
+        sched_layout.addWidget(sched_hint)
+        self.sched_list = TaskListEditor(True, SOFTWARE_META, list(CHAIN_SOFTWARE))
+        self.sched_list.changed.connect(self.on_workflow_changed)
+        self.sched_list.set_tasks(self._config_scheduled_tasks())
+        sched_layout.addWidget(self.sched_list)
+        panel.add_widget(self.sched_box)
+
+        action_row = QHBoxLayout()
+        self.btn_run_chain = QPushButton("按顺序立即执行")
+        self.btn_run_chain.setObjectName("Primary")
+        self.btn_run_chain.setCursor(Qt.PointingHandCursor)
+        self.btn_run_chain.clicked.connect(lambda: self.start_chain())
+        action_row.addWidget(self.btn_run_chain)
+        action_row.addStretch(1)
+        panel.add_layout(action_row)
+
+        self.schedule_status = QLabel()
+        self.schedule_status.setObjectName("Hint")
+        self.schedule_status.setWordWrap(True)
+        panel.add_widget(self.schedule_status)
+
+        mode = chain.get("mode", "sequential")
+        self.mode_seq_btn.setChecked(mode != "scheduled")
+        self.mode_task_btn.setChecked(mode == "scheduled")
+        self.apply_workflow_mode()
+        return panel
 
     def select_software(self, key: str) -> None:
         self.selected_software = key
         for card_key, card in self.cards.items():
             card.set_selected(card_key == key)
-        # 周常/月常 只对 MAA 有意义
-        self.left_panel.setVisible(key == "maa")
+        # 周常/月常 只对 MAA 有意义；日常工作流 有独立的编排面板
+        is_maa = key == "maa"
+        self.weekly_panel.setVisible(is_maa)
+        self.monthly_panel.setVisible(is_maa)
+        self.workflow_panel.setVisible(key == WORKFLOW_KEY)
+        self.left_panel.setVisible(key in ("maa", WORKFLOW_KEY))
+
+    # -- 日常工作流 ------------------------------------------------------ #
+    def set_workflow_mode(self, mode: str) -> None:
+        self.mode_seq_btn.setChecked(mode != "scheduled")
+        self.mode_task_btn.setChecked(mode == "scheduled")
+        self.on_workflow_changed()
+
+    def apply_workflow_mode(self) -> None:
+        scheduled = self.mode_task_btn.isChecked()
+        self.seq_box.setVisible(not scheduled)
+        self.sched_box.setVisible(scheduled)
+
+    def _chain_needs_save(self) -> bool:
+        """True when the stored chain lacks the split task lists or stable ids."""
+        chain = self._chain_cfg()
+        if "start_slots" not in chain:
+            return True
+        for key in ("sequential_tasks", "scheduled_tasks"):
+            stored = chain.get(key)
+            if not stored:
+                return True
+            if any(
+                not isinstance(t, dict) or not t.get("id") for t in stored
+            ):
+                return True
+        return False
+
+    def _sync_chain_config(self) -> None:
+        """Push the current UI state into the config so the scheduler sees it."""
+        self.config.setdefault("workflow", {})["chain"] = self._collect_chain()
+
+    def on_workflow_changed(self) -> None:
+        self.apply_workflow_mode()
+        self._sync_chain_config()
+        enabled = self.chain_switch.isChecked()
+        self.workflow_card.set_state_text("定时已开" if enabled else "定时已关", active=enabled)
+        self.update_schedule_status()
+        self.save_timer.start()
+
+    def _collect_chain(self) -> dict:
+        chain = self._chain_cfg()
+        return {
+            "enabled": self.chain_switch.isChecked(),
+            "mode": "scheduled" if self.mode_task_btn.isChecked() else "sequential",
+            "start_slots": self.chain_times.slots(),
+            "grace_minutes": int(chain.get("grace_minutes", 30) or 0),
+            "state_file": chain.get("state_file", "logs/schedule_state.json"),
+            "sequential_tasks": self.seq_list.collect(),
+            "scheduled_tasks": self.sched_list.collect(),
+        }
+
+    def update_schedule_status(self) -> None:
+        if not hasattr(self, "schedule_status"):
+            return
+        if not self.chain_switch.isChecked():
+            self.schedule_status.setText("定时：已停用 → 不会自动触发")
+            return
+        next_run = self.scheduler.next_run()
+        if next_run is None:
+            self.schedule_status.setText("定时：未设置有效时间")
+            return
+        minutes = max(0, int((next_run - datetime.now()).total_seconds() // 60))
+        hours, mins = divmod(minutes, 60)
+        eta = f"{hours} 小时 {mins} 分" if hours else f"{mins} 分"
+        self.schedule_status.setText(
+            f"下次运行：{next_run.strftime('%m-%d %H:%M')}（约 {eta} 后）"
+        )
+
+    def check_schedule(self) -> None:
+        if self.worker and self.worker.isRunning():
+            return
+        self._sync_chain_config()
+        try:
+            events = self.scheduler.poll()
+        except Exception as e:
+            logger.warning("定时检查失败: {}", e)
+            return
+        if events:
+            event = events[0]
+            self.scheduler.mark(event)
+            logger.info("定时触发日常工作流: {}", event.label)
+            self.start_chain(event.software_list)
+        self.update_schedule_status()
 
     def selected_days(self) -> list[int]:
         return [i for i, btn in enumerate(self.day_buttons) if btn.isChecked()]
@@ -502,13 +853,14 @@ class MaAgentWindow(QMainWindow):
         monthly.setdefault("state_file", "logs/monthly_state.json")
         workflow = self.config.setdefault("workflow", {})
         workflow["auto_close"] = self.auto_close_switch.isChecked()
+        workflow["chain"] = self._collect_chain()
         try:
             target = self._config_write_path()
             with open(target, "w", encoding="utf-8") as f:
                 yaml.safe_dump(self.config, f, allow_unicode=True, sort_keys=False)
             logger.info(
                 "设置已保存: 体力药刷取={} 使用日={} | 剿灭刷取={} 刷取日={} | "
-                "绿票商店={} 黄票商店={} | 完成后自动关闭={}",
+                "绿票商店={} 黄票商店={} | 完成后自动关闭={} | 工作流定时={} 方式={}",
                 potion["enabled"],
                 potion["days"],
                 anni["enabled"],
@@ -516,6 +868,8 @@ class MaAgentWindow(QMainWindow):
                 monthly["green"]["enabled"],
                 monthly["yellow"]["enabled"],
                 workflow["auto_close"],
+                workflow["chain"]["enabled"],
+                workflow["chain"]["mode"],
             )
         except Exception as e:
             logger.error("保存周常设置失败: {}", e)
@@ -533,6 +887,9 @@ class MaAgentWindow(QMainWindow):
         if self.worker and self.worker.isRunning():
             self.request_stop()
             return
+        if self.selected_software == WORKFLOW_KEY:
+            self.start_chain()
+            return
         software = self.selected_software or "maa"
         if not self._software_enabled(software):
             name = SOFTWARE_META.get(software, (software, ""))[0]
@@ -546,6 +903,32 @@ class MaAgentWindow(QMainWindow):
         self.status_label.setText("状态: 运行中...")
         self.report_view.clear()
         self.worker = DailyWorker(self.config, self.stop_event, software)
+        self.worker.status.connect(self.status_label.setText)
+        self.worker.finished_report.connect(self.on_report)
+        self.worker.finished.connect(self.on_worker_finished)
+        self.worker.start()
+
+    def start_chain(self, software_list: list[str] | None = None) -> None:
+        if self.worker and self.worker.isRunning():
+            logger.warning("已有任务在运行，忽略本次工作流启动")
+            return
+        if software_list is None:
+            software_list = self.seq_list.enabled_softwares()
+        runnable = [s for s in software_list if self._software_enabled(s)]
+        for skipped in (s for s in software_list if s not in runnable):
+            logger.warning("{} 未启用，已跳过", SOFTWARE_META.get(skipped, (skipped, ""))[0])
+        if not runnable:
+            logger.warning("日常工作流没有可执行的任务")
+            self.status_label.setText("状态: 工作流无可用任务")
+            return
+        self.stop_event = threading.Event()
+        self.btn_start.setEnabled(True)
+        self.btn_start.setText("停止日常")
+        self._set_button_role(self.btn_start, "Danger")
+        self.status_label.setText("状态: 工作流运行中...")
+        self.report_view.clear()
+        logger.info("开始日常工作流: {}", " → ".join(runnable))
+        self.worker = ChainWorker(self.config, self.stop_event, runnable)
         self.worker.status.connect(self.status_label.setText)
         self.worker.finished_report.connect(self.on_report)
         self.worker.finished.connect(self.on_worker_finished)
@@ -569,7 +952,12 @@ class MaAgentWindow(QMainWindow):
         button.style().polish(button)
 
     def on_report(self, report) -> None:
-        self.report_view.setPlainText(report.to_text())
+        text = report.to_text()
+        existing = self.report_view.toPlainText()
+        self.report_view.setPlainText(f"{existing}\n\n{text}" if existing else text)
+        self.report_view.verticalScrollBar().setValue(
+            self.report_view.verticalScrollBar().maximum()
+        )
 
     def copy_report(self) -> None:
         text = self.report_view.toPlainText()
@@ -595,6 +983,8 @@ class MaAgentWindow(QMainWindow):
         subprocess.Popen(["explorer", str(self.config_path.parent)])
 
     def closeEvent(self, event) -> None:  # noqa: N802
+        if self.schedule_timer.isActive():
+            self.schedule_timer.stop()
         if self.save_timer.isActive():
             self.save_timer.stop()
             self.save_settings()
