@@ -14,7 +14,7 @@ from maagent.log.logger import setup_logger
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="maagent - 二游日常助手")
+    parser = argparse.ArgumentParser(description="Maagent - 二游日常助手")
     parser.add_argument("--config", default=None, help="config.yaml 路径")
     parser.add_argument("--daily", action="store_true", help="完整工作流：启动→关弹窗→LinkStart→监控→报告→邮件")
     parser.add_argument("--maaend", action="store_true", help="终末地工作流：启动 MaaEnd→开始任务→等待结束→报告→邮件")

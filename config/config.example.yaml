@@ -2,6 +2,13 @@ app:
   name: maagent
   timezone: Asia/Shanghai
   log_dir: logs
+  minimize_to_tray: true         # 关闭窗口时最小化到托盘，定时任务继续运行
+  language: zh_CN                # zh_CN | zh_TW | en | ja
+  theme: light                   # light | dark
+  autostart: false               # 开机自启动
+  hotkeys:                       # 全局快捷键（作用于当前选中卡片）
+    start: F8                    # 开始任务
+    stop: F9                     # 强制结束任务
 
 workflow:
   game: "明日方舟"
@@ -91,6 +98,7 @@ notify:
     username: "your@qq.com"
     password: ""
     to: ["your@qq.com"]
+    send_log: false              # 是否将当天任务日志作为附件一并发送
   wechat:
     enabled: false
     webhook_url: ""

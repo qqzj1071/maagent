@@ -28,8 +28,16 @@ from PySide6.QtWidgets import (
 )
 
 from maagent.core.scheduler import parse_hhmm
+from maagent.i18n import t
 
 WEEKDAY_LABELS = ["一", "二", "三", "四", "五", "六", "日"]
+
+
+def set_button_role(button, role: str) -> None:
+    """Swap a QPushButton's objectName (Primary/Danger/Ghost) and restyle it."""
+    button.setObjectName(role)
+    button.style().unpolish(button)
+    button.style().polish(button)
 
 
 class LogBridge(QObject):
@@ -44,8 +52,6 @@ class SoftwareCard(QFrame):
     def __init__(self, key: str, name: str, desc: str, enabled: bool, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.key = key
-        self._enabled = enabled
-        self._selected = False
         self.setObjectName("Card")
         self.setFixedSize(164, 88)
         self.setCursor(Qt.PointingHandCursor)
@@ -71,7 +77,7 @@ class SoftwareCard(QFrame):
         layout.addWidget(desc_label)
 
         layout.addStretch(1)
-        self.state_label = QLabel("已启用" if enabled else "未启用")
+        self.state_label = QLabel(t("card.enabled") if enabled else t("card.disabled"))
         self.state_label.setObjectName("CardState")
         self.state_label.setStyleSheet("color: #4f46e5;" if enabled else "color: #9ca3af;")
         layout.addWidget(self.state_label)
@@ -80,18 +86,7 @@ class SoftwareCard(QFrame):
         self.setProperty("selected", False)
 
     def set_selected(self, value: bool) -> None:
-        self._selected = value
         self.setProperty("selected", value)
-        self.style().unpolish(self)
-        self.style().polish(self)
-
-    def set_enabled(self, value: bool) -> None:
-        value = bool(value)
-        self._enabled = value
-        self.dot.setStyleSheet("color: #4f46e5;" if value else "color: #d1d5db;")
-        self.state_label.setText("已启用" if value else "未启用")
-        self.state_label.setStyleSheet("color: #4f46e5;" if value else "color: #9ca3af;")
-        self.setProperty("inactive", not value)
         self.style().unpolish(self)
         self.style().polish(self)
 
@@ -293,11 +288,6 @@ class WeekdayPicker(QWidget):
 
     def selected_days(self) -> list[int]:
         return [i for i, btn in enumerate(self.buttons) if btn.isChecked()]
-
-    def set_selected(self, days: list[int] | None) -> None:
-        days_set = set(days or [])
-        for i, btn in enumerate(self.buttons):
-            btn.setChecked(i in days_set)
 
 
 class TimeListEditor(QWidget):
@@ -594,7 +584,7 @@ class TaskListEditor(QWidget):
             add_row = QHBoxLayout(self.add_box)
             add_row.setContentsMargins(0, 0, 0, 0)
             add_row.setSpacing(6)
-            hint = QLabel("添加条目")
+            hint = QLabel(t("wf.add_entry"))
             hint.setObjectName("ToggleLabel")
             add_row.addWidget(hint)
             for key in self.softwares:
@@ -646,11 +636,14 @@ class TaskListEditor(QWidget):
             tasks.append(task)
         return tasks
 
-    def enabled_softwares(self) -> list[str]:
+    def enabled_softwares(self, unique: bool = True) -> list[str]:
         result: list[str] = []
         for row in self.rows:
-            if row.is_enabled() and row.software not in result:
-                result.append(row.software)
+            if not row.is_enabled():
+                continue
+            if unique and row.software in result:
+                continue
+            result.append(row.software)
         return result
 
     # -- mutations ------------------------------------------------------ #

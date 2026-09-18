@@ -21,8 +21,9 @@ def now_str() -> str:
 
 def send_report(config: dict[str, Any], report: RunReport) -> bool:
     email_cfg = (config.get("notify", {}) or {}).get("email", {})
-    subject = f"[maagent] {report.game}日常 - {report.status_label}"
-    return EmailNotifier(email_cfg).send(subject, report.to_html())
+    log_dir = (config.get("app", {}) or {}).get("log_dir", "logs")
+    subject = f"[Maagent] {report.game}日常 - {report.status_label}"
+    return EmailNotifier(email_cfg, log_dir=log_dir).send(subject, report.to_html())
 
 
 class BaseWorkflow:

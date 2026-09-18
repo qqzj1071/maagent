@@ -170,7 +170,7 @@ class Orchestrator(BaseWorkflow):
 
         report.logs = logmon.logs
         report.popups_closed = monitor.closed
-        report.errors = logmon.detect_errors()
+        report.errors, report.warnings = logmon.classify()
         self._populate_from_logs(report)
         min_runtime = wf.get("min_runtime_seconds", 90)
         if result == "timeout":
@@ -182,6 +182,8 @@ class Orchestrator(BaseWorkflow):
             report.errors.append(
                 f"任务在 {int(run_seconds)} 秒内结束，疑似未成功连接模拟器或立即失败"
             )
+        elif report.warnings:
+            report.status = "warning"
         else:
             report.status = "success"
 

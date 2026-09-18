@@ -77,7 +77,7 @@ class RunReport:
         return rows
 
     def to_text(self) -> str:
-        lines = [f"【maagent 日常报告】{self.game}（{self.status_label}）"]
+        lines = [f"【Maagent 日常报告】{self.game}（{self.status_label}）"]
         rows = self._rows()
         lines.append(
             f"开始: {rows[0][1]}    结束: {rows[1][1]}    耗时: {rows[2][1]}"
@@ -99,7 +99,7 @@ class RunReport:
                 body.append(f"<tr><td><b>{label}</b></td><td>{value}</td></tr>")
         rows_html = "\n".join(body)
         return f"""<html><body style="font-family:sans-serif;font-size:14px">
-<h3>【maagent 日常报告】{self.game} <span style="color:{color}">{self.status_label}</span></h3>
+<h3>【Maagent 日常报告】{self.game} <span style="color:{color}">{self.status_label}</span></h3>
 <table cellpadding="4" style="border-collapse:collapse">
 {rows_html}
 </table>

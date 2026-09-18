@@ -26,10 +26,19 @@ maagent/                 # Python package
   core/orchestrator.py   # the MAA --daily workflow
   core/maaend.py         # the MaaEnd (终末地) --maaend workflow
   core/scheduler.py      # 日常工作流 chain schedule (sequential / per-task, persisted state)
+  core/workflow_config.py # pure chain config helpers (normalize/migrate/needs_save)
   report/generator.py    # concise report (start/end, errors, sanity, next deadline)
   notify/email.py        # SMTP (QQ) ; notify/wechat.py (stub)
-  gui/app.py             # PySide6 GUI (entry for the exe) + ChainWorker
-  gui/widgets.py         # SoftwareCard / ToggleSwitch / CollapsibleSection / WeekdayPicker / WorkflowTaskRow
+  i18n.py                # zh_CN / zh_TW / en / ja translation table + t()
+  control/autostart.py   # HKCU ...\Run registry autostart
+  gui/app.py             # PySide6 GUI entry (window, tray, cards, weekly/monthly, settings wiring)
+  gui/constants.py       # SOFTWARE_META / workflow card keys / DEFAULT_HOTKEYS
+  gui/workflow.py        # WorkflowPanel: schedule toggle, modes, task lists, run button
+  gui/workers.py         # WorkflowWorker (runs 1..N daily workflows in a QThread)
+  gui/config_log.py      # config snapshot + "only changed fields" save logging
+  gui/widgets.py         # SoftwareCard / ToggleSwitch / CollapsibleSection / WeekdayPicker / TaskListEditor
+  gui/settings.py        # 设置 page (外观 / 通用 / 快捷键 / 关于)
+  gui/hotkeys.py         # global hotkeys (RegisterHotKey + WM_HOTKEY native filter)
   log/logger.py
 config/                  # config.yaml (gitignored), config.example.yaml, config.test.yaml
 scripts/                 # make_icon.py, monitor_daily.py
@@ -93,8 +102,12 @@ send email.
 - **The two lists are independent** and both live in `TaskListEditor` widgets
   (`MaAgentWindow.seq_list` / `.sched_list`). Only the scheduled list allows
   copy/delete/add (each software keeps ≥1 entry, last delete button disabled);
-  the sequential list is one-per-software and reorder-only. `按顺序立即执行` runs
-  `seq_list.enabled_softwares()` via `ChainWorker`.
+  the sequential list is one-per-software and reorder-only.
+- In the workflow view the bottom 关闭 MAA / 模拟器 and 开始日常 buttons are hidden
+  (`select_software`); the panel's `按顺序立即执行` button toggles start/stop and
+  runs the **active mode's** list via `start_workflow_now()` (scheduled list keeps
+  duplicates). The start hotkey (F8) does the same while the workflow card is
+  selected, otherwise it starts the selected card.
 - Drag the `≡` grip (`DragHandle`) to reorder. This is a **manual drag, not Qt
   QDrag/drop** (a child label never gives the parent row the implicit mouse grab,
   so DnD was unreliable): the grip emits `drag_started/moved/ended(payload,
@@ -178,10 +191,42 @@ send email.
 ## GUI
 
 - Entry `maagent/gui/app.py` → `main()`, window class `MaAgentWindow`,
-  title `maagent - 二游日常助手`.
+  title `Maagent - 二游日常助手` (output-layer brand is "Maagent" with a capital
+  M; package/paths/log filename stay lowercase `maagent`).
 - Icon assets `maagent/gui/assets/icon.{png,ico}`; path resolution must handle
   frozen builds via `asset_path()` (`sys._MEIPASS/maagent/gui/assets`).
 - Workflow runs in a `DailyWorker(QThread)`; loguru is bridged to the UI.
+- **Close-to-tray**: `_setup_tray()` creates a `QSystemTrayIcon` (menu: 显示主界面 /
+  退出 maagent). `closeEvent` hides to the tray instead of quitting when
+  `app.minimize_to_tray` is on and the tray exists, so `schedule_timer` keeps
+  firing; the real exit is `quit_app()` → `_shutdown()` (sets `_quitting`, stops
+  timers, unregisters hotkeys, hides the tray). `main()` sets
+  `setQuitOnLastWindowClosed(False)`. Tray toggle lives next to the auto-close
+  switch; scheduled starts call `notify()` to show a balloon.
+- **设置 page** (`gui/settings.py`): the top-right 设置 button swaps the central
+  `QStackedWidget` to `SettingsPage` (in the same window — no separate dialog),
+  with sidebar nav + pages 外观 / 通用 / 快捷键 / 关于, styled via `Settings*`
+  object names in both QSS themes. Appearance uses `ChoiceGroup` (large
+  `ChoiceButton` grid, accent fill when selected, MaaEnd-style) and General uses
+  the main UI's `ToggleSwitch` rows instead of combo boxes/checkboxes. `saved`/`cancelled` signals drive
+  `_on_settings_saved` / `_show_main`. `apply_settings()` persists to config, applies
+  theme (`apply_theme`), re-registers hotkeys, sets autostart, and rebuilds the UI
+  via `reload_ui()` when the language changes (there is no retranslate bookkeeping
+  — `_build_ui` reads `t()` afresh). Config keys: `app.language` (zh_CN/zh_TW/en/ja),
+  `app.theme` (light/dark), `app.autostart`, `app.hotkeys.{start,stop}`,
+  `notify.email.send_log`.
+- **i18n** (`i18n.py`): flat key→string table, `t(key, **kwargs)`. All four
+  languages must share the same key set (verify with a quick diff). Some dynamic
+  weekly/monthly status lines are still Chinese.
+- **Global hotkeys** (`gui/hotkeys.py`): `RegisterHotKey(None, id, mods, vk)` +
+  `QAbstractNativeEventFilter` catching `WM_HOTKEY`; F8 = start, F9 = force stop,
+  acting on the selected card. `_register_hotkeys()` is called on startup and after
+  settings changes.
+- **Autostart** (`control/autostart.py`): writes `maagent` under
+  `HKCU\...\CurrentVersion\Run`; frozen builds use the exe, dev uses `pythonw -m
+  maagent.gui.app`.
+- **Dark theme**: `DARK_QSS` + a dark `QPalette` in `apply_theme()`; inline
+  widget styles are limited to accent colors so they read fine on both themes.
 
 ## Build the exe
 
@@ -223,5 +268,5 @@ git -c http.proxy=http://127.0.0.1:7897 -c https.proxy=http://127.0.0.1:7897 pus
 ```
 
 GUI smoke test: launch `dist\maagent.exe`, wait for a window titled
-`maagent - 二游日常助手` (match by process `maagent.exe`), screenshot the title
+`Maagent - 二游日常助手` (match by process `maagent.exe`), screenshot the title
 bar to confirm the icon, then `taskkill /IM maagent.exe /F`.

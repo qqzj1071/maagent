@@ -63,6 +63,10 @@ IDLE_KEYWORDS = ["Link", "Start", "开始"]
 START_KEYWORDS = ["连接成功", "开始任务", "开始唤醒", "理智作战", "基建换班"]
 COMPLETE_KEYWORDS = ["全部任务已完成", "任务已完成", "任务完成", "全部完成", "已完成"]
 ERROR_KEYWORDS = ["错误", "失败", "异常", "出错", "无法"]
+CONNECTION_FAIL_KEYWORDS = ["连接失败", "连接错误", "连接超时", "无法连接", "连接中断", "重连失败"]
+CONNECTION_OK_KEYWORDS = ["连接成功", "已连接", "连接正常", "重新连接成功"]
+SUBTASK_ERROR_KEYWORDS = ["任务出错", "任务异常", "执行异常", "子任务"]
+IGNORE_ERROR_KEYWORDS = ["FPS", "补帧", "画面"]
 
 
 def _group_lines(items: list[Any]) -> list[str]:
@@ -171,12 +175,37 @@ class MaaLogMonitor:
             for ln in self.logs
         )
 
-    def detect_errors(self) -> list[str]:
-        ignore = ["FPS", "补帧", "画面"]
-        return [
-            ln for ln in self.logs
-            if any(k in ln for k in ERROR_KEYWORDS) and not any(ig in ln for ig in ignore)
+    def classify(self) -> tuple[list[str], list[str]]:
+        """Split problem lines into (fatal errors, sub-task warnings).
+
+        - A connection failure is ignored when MAA later connects successfully
+          (it retried), so a transient drop is not reported as a failure.
+        - Task-level lines like 「任务出错：仓库识别」 are sub-task warnings, not
+          fatal errors (mirrors the MaaEnd report's 子任务报错 handling).
+        """
+        ok_positions = [
+            i
+            for i, ln in enumerate(self.logs)
+            if any(k in ln for k in CONNECTION_OK_KEYWORDS)
         ]
+        errors: list[str] = []
+        warnings: list[str] = []
+        for i, ln in enumerate(self.logs):
+            if not any(k in ln for k in ERROR_KEYWORDS):
+                continue
+            if any(ig in ln for ig in IGNORE_ERROR_KEYWORDS):
+                continue
+            if any(k in ln for k in SUBTASK_ERROR_KEYWORDS):
+                warnings.append(ln)
+            elif any(k in ln for k in CONNECTION_FAIL_KEYWORDS):
+                if not any(pos > i for pos in ok_positions):
+                    errors.append(ln)
+            else:
+                errors.append(ln)
+        return errors, warnings
+
+    def detect_errors(self) -> list[str]:
+        return self.classify()[0]
 
     def _alive(self) -> bool:
         return bool(win32gui.IsWindow(self.hwnd))

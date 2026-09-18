@@ -1,17 +1,28 @@
 from __future__ import annotations
 
 import smtplib
+from datetime import date
 from email.header import Header
+from email.mime.application import MIMEApplication
+from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.utils import formataddr
+from pathlib import Path
 from typing import Any
 
 from loguru import logger
 
 
 class EmailNotifier:
-    def __init__(self, config: dict[str, Any]) -> None:
+    def __init__(self, config: dict[str, Any], log_dir: str | Path | None = None) -> None:
         self.config = config
+        self.log_dir = Path(log_dir) if log_dir else None
+
+    def _log_attachment(self) -> Path | None:
+        if self.log_dir is None:
+            return None
+        path = self.log_dir / f"maagent_{date.today():%Y-%m-%d}.log"
+        return path if path.exists() else None
 
     def send(self, subject: str, html: str) -> bool:
         cfg = self.config
@@ -23,9 +34,23 @@ class EmailNotifier:
             logger.warning("邮件收件人为空，跳过发送")
             return False
 
-        msg = MIMEText(html, "html", "utf-8")
+        log_path = self._log_attachment() if cfg.get("send_log") else None
+        if log_path is not None:
+            msg = MIMEMultipart()
+            msg.attach(MIMEText(html, "html", "utf-8"))
+            try:
+                part = MIMEApplication(log_path.read_bytes())
+                part.add_header(
+                    "Content-Disposition", "attachment", filename=log_path.name
+                )
+                msg.attach(part)
+                logger.info("已附加任务日志: {}", log_path.name)
+            except OSError as e:
+                logger.warning("读取日志附件失败: {}", e)
+        else:
+            msg = MIMEText(html, "html", "utf-8")
         msg["Subject"] = Header(subject, "utf-8")
-        msg["From"] = formataddr(("maagent", cfg["username"]))
+        msg["From"] = formataddr(("Maagent", cfg["username"]))
         msg["To"] = ", ".join(to)
 
         host = cfg["smtp_host"]
