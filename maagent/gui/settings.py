@@ -305,10 +305,6 @@ class SettingsPage(QWidget):
         page, layout = self._page("settings.tab.account", "settings.account.desc")
         layout.setSpacing(18)
 
-        self.smtp_host = QLineEdit()
-        self.smtp_host.setPlaceholderText(t("settings.smtp.host"))
-        self.smtp_port = QLineEdit()
-        self.smtp_port.setPlaceholderText(t("settings.smtp.port"))
         self.smtp_username = QLineEdit()
         self.smtp_username.setPlaceholderText(t("settings.smtp.username"))
         self.smtp_password = QLineEdit()
@@ -328,13 +324,11 @@ class SettingsPage(QWidget):
         smtp_layout.setContentsMargins(0, 0, 0, 0)
         smtp_layout.setSpacing(12)
         smtp_layout.addWidget(smtp_hint)
-        smtp_layout.addWidget(self.smtp_host)
-        smtp_layout.addWidget(self.smtp_port)
         smtp_layout.addWidget(self.smtp_username)
         smtp_layout.addWidget(self.smtp_password)
         smtp_layout.addWidget(self.smtp_test_btn)
         smtp_layout.addWidget(self.smtp_msg)
-        for field in (self.smtp_host, self.smtp_port, self.smtp_username, self.smtp_password):
+        for field in (self.smtp_username, self.smtp_password):
             field.textChanged.connect(self._on_smtp_changed)
         self.smtp_card = self._section(t("settings.smtp.section"), self.smtp_box)
         layout.addWidget(self.smtp_card)
@@ -616,11 +610,18 @@ class SettingsPage(QWidget):
         self._refresh_smtp_visibility()
 
     # -- SMTP / bind email ---------------------------------------------- #
-    def _smtp_port(self) -> int:
+    def _smtp_settings(self) -> dict:
+        email_cfg = (self.config.get("notify", {}) or {}).get("email", {}) or {}
         try:
-            return int(self.smtp_port.text().strip() or 465)
-        except ValueError:
-            return 465
+            port = int(email_cfg.get("smtp_port") or 465)
+        except (TypeError, ValueError):
+            port = 465
+        return {
+            "host": str(email_cfg.get("smtp_host") or "smtp.qq.com"),
+            "port": port,
+            "username": self.smtp_username.text().strip(),
+            "password": self.smtp_password.text().strip(),
+        }
 
     def _invalidate_account_service(self) -> None:
         if self._service is not None:
@@ -632,8 +633,8 @@ class SettingsPage(QWidget):
 
     def _on_smtp_changed(self) -> None:
         email_cfg = self.config.setdefault("notify", {}).setdefault("email", {})
-        email_cfg["smtp_host"] = self.smtp_host.text().strip() or "smtp.qq.com"
-        email_cfg["smtp_port"] = self._smtp_port()
+        email_cfg.setdefault("smtp_host", "smtp.qq.com")
+        email_cfg.setdefault("smtp_port", 465)
         email_cfg["username"] = self.smtp_username.text().strip()
         email_cfg["password"] = self.smtp_password.text().strip()
         self._invalidate_account_service()
@@ -965,11 +966,9 @@ class SettingsPage(QWidget):
         for status, switch in self.email_log_switches.items():
             switch.setChecked(status in when)
 
-        smtp_fields = (self.smtp_host, self.smtp_port, self.smtp_username, self.smtp_password)
+        smtp_fields = (self.smtp_username, self.smtp_password)
         for field in smtp_fields:
             field.blockSignals(True)
-        self.smtp_host.setText(str(email.get("smtp_host") or "smtp.qq.com"))
-        self.smtp_port.setText(str(email.get("smtp_port") or 465))
         self.smtp_username.setText(str(email.get("username") or ""))
         self.smtp_password.setText(str(email.get("password") or ""))
         for field in smtp_fields:
@@ -994,12 +993,7 @@ class SettingsPage(QWidget):
                 for status, switch in self.email_log_switches.items()
                 if switch.isChecked()
             ],
-            "smtp": {
-                "host": self.smtp_host.text().strip() or "smtp.qq.com",
-                "port": self._smtp_port(),
-                "username": self.smtp_username.text().strip(),
-                "password": self.smtp_password.text().strip(),
-            },
+            "smtp": self._smtp_settings(),
             "hotkeys": {
                 "start": self.hotkey_start.value(),
                 "stop": self.hotkey_stop.value(),

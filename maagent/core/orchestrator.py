@@ -256,23 +256,77 @@ class Orchestrator(BaseWorkflow):
             logger.info("MAA 正在启动模拟器阶段，等待其结束...")
             logmon.wait_idle(timeout=wf.get("emulator_wait_timeout", 180), interval=3.0)
 
+        hwnd = logmon.hwnd
+        start_timeout = wf.get("start_timeout", 90)
+        hotkey_timeout = min(20, start_timeout)
         for attempt in range(1, 4):
             self._check_stop()
             monitor.scan_once()
+            # The start hotkey goes to the focused window, so bring MAA to the front.
+            if hwnd:
+                ensure_visible(hwnd)
+                _force_foreground(hwnd)
+                time.sleep(0.6)
             logger.info("触发 Link Start（第 {} 次）", attempt)
             adapter.press_link_start()
-            deadline = time.time() + wf.get("start_timeout", 90)
-            while time.time() < deadline:
-                self._check_stop()
-                monitor.scan_once()
-                logmon.collect_logs()
-                if logmon.detect_started():
-                    return True
-                if logmon.button_state() == "idle":
-                    logger.warning("任务未开始即回到空闲，准备重试")
-                    break
-                time.sleep(3.0)
+            if self._wait_started(logmon, monitor, hotkey_timeout):
+                return True
+            # The hotkey may be unset/disabled in MAA; fall back to clicking the button.
+            logger.info("Link Start 热键未生效，改为点击按钮")
+            if self._click_link_start(hwnd) and self._wait_started(
+                logmon, monitor, start_timeout
+            ):
+                return True
         return False
+
+    def _wait_started(
+        self, logmon: MaaLogMonitor, monitor: MaaPopupMonitor, timeout: float
+    ) -> bool:
+        """Poll until the daily actually starts (or the button returns to idle)."""
+        pressed = time.time()
+        deadline = pressed + timeout
+        while time.time() < deadline:
+            self._check_stop()
+            monitor.scan_once()
+            logmon.collect_logs()
+            if logmon.detect_started():
+                return True
+            # A short grace period avoids reading the stale button right after the click.
+            if time.time() - pressed > 6.0 and logmon.button_state() == "idle":
+                logger.warning("任务未开始即回到空闲，准备重试")
+                return False
+            time.sleep(3.0)
+        return logmon.detect_started()
+
+    def _click_link_start(self, hwnd: int | None) -> bool:
+        """OCR-locate and click MAA's Link Start button (fallback for the hotkey)."""
+        if not hwnd:
+            return False
+        try:
+            image = capture_window(hwnd)
+            if image is None:
+                return False
+            w, h = image.size
+            l, t, r, b = (
+                int(BUTTON_REGION[0] * w), int(BUTTON_REGION[1] * h),
+                int(BUTTON_REGION[2] * w), int(BUTTON_REGION[3] * h),
+            )
+            items = recognize(image.crop((l, t, r, b)))
+            item = None
+            for name in ("Link", "Start", "开始"):
+                item = find_text(items, name)
+                if item is not None:
+                    break
+            if item is None:
+                return False
+            wx, wy, _, _ = win32gui.GetWindowRect(hwnd)
+            _click_screen(wx + l + item.center[0], wy + t + item.center[1])
+            logger.info("已点击 MAA 的 Link Start 按钮")
+            time.sleep(1.0)
+            return True
+        except Exception as e:
+            logger.warning("点击 Link Start 按钮失败: {}", e)
+            return False
 
     def _settle(self, monitor: MaaPopupMonitor, seconds: float) -> None:
         logger.info("等待 MAA 就绪并清理弹窗（约 {} 秒）...", seconds)

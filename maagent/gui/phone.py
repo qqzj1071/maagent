@@ -75,6 +75,7 @@ class PhoneRemoteDialog(QDialog):
 
     def _append(self, text: str) -> None:
         self.log_view.appendPlainText(text)
+        logger.info("手机远程: {}", text)
 
     def start_setup(self) -> None:
         self.start_btn.setEnabled(False)

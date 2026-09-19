@@ -190,13 +190,15 @@ def login(log: Log, timeout_seconds: int = 300) -> bool:
 
 
 def _find_enable_url(output: str) -> str | None:
-    for line in output.splitlines():
-        line = line.strip()
-        if "login.tailscale.com" in line or "tailscale.com/f/funnel" in line:
-            for token in line.split():
-                if token.startswith("http"):
-                    return token
-    return None
+    urls = [
+        token.strip().strip("\"'.,)")
+        for token in output.split()
+        if token.strip().startswith(("http://", "https://"))
+    ]
+    for url in urls:
+        if "/f/funnel" in url:
+            return url
+    return urls[0] if urls else None
 
 
 def _wait_running(log: Log, timeout_seconds: int = 30) -> bool:
@@ -208,50 +210,70 @@ def _wait_running(log: Log, timeout_seconds: int = 30) -> bool:
     return is_logged_in()
 
 
-def enable_funnel(port: int, log: Log, attempts: int = 6) -> bool:
+def enable_funnel(port: int, log: Log, wait_seconds: int = 300) -> bool:
     """Run ``tailscale funnel --bg <port>`` (proxies 443 -> 127.0.0.1:port).
 
-    The GUI client must be running, and the first run may require approving
-    Funnel in the browser; we open the approval URL and retry.
+    The GUI client must be running. On a tailnet where Funnel is not enabled
+    yet, the first run prints an approval URL: we open it once and keep retrying
+    for up to ``wait_seconds`` while the user approves it in the browser.
     """
     exe = tailscale_exe()
     if not exe:
         return False
     ensure_ipn(log)
     if not _wait_running(log, 30):
-        log("Tailscale 尚未就绪，请稍后重试")
-    for _ in range(attempts):
+        log("Tailscale 尚未就绪，继续尝试…")
+    opened: set[str] = set()
+    hard_errors = 0
+    deadline = time.time() + wait_seconds
+    last_output = ""
+    while time.time() < deadline:
         log(f"启用 Funnel（公网 https://…:443 → 本机 127.0.0.1:{port}）…")
         try:
             result = subprocess.run(
                 [exe, "funnel", "--bg", "--yes", str(port)],
-                capture_output=True, text=True, timeout=60,
+                capture_output=True, text=True, timeout=90,
                 creationflags=_NO_WINDOW,
             )
+        except subprocess.TimeoutExpired:
+            log("命令执行超时，稍后重试…")
+            time.sleep(5)
+            continue
         except Exception as e:
             log(f"Funnel 启动失败：{e}")
             return False
         if result.returncode == 0:
             log("Funnel 已启用")
             return True
-        output = (result.stdout or "") + (result.stderr or "")
+        output = ((result.stdout or "") + "\n" + (result.stderr or "")).strip()
+        if output:
+            last_output = output
         url = _find_enable_url(output)
         if url:
-            log("需要在浏览器中批准启用 Funnel，已为你打开页面…")
-            try:
-                webbrowser.open(url)
-            except Exception:
-                log(f"请手动访问：{url}")
-            time.sleep(8)
+            if url not in opened:
+                opened.add(url)
+                log("首次启用 Funnel 需要在浏览器中批准（仅需一次）：")
+                log(f"  {url}")
+                try:
+                    webbrowser.open(url)
+                    log("已尝试打开浏览器；若未打开，请手动访问上面的链接。")
+                except Exception:
+                    log("无法自动打开浏览器，请手动访问上面的链接。")
+            else:
+                log("等待你在浏览器中完成批准…")
+            time.sleep(10)
             continue
         if "NoState" in output or "starting" in output.lower():
             log("Tailscale 正在启动，稍后重试…")
             ensure_ipn(log)
             time.sleep(5)
             continue
-        log(output.strip() or "Funnel 启用失败")
-        return False
-    log("Funnel 启用超时，请稍后在设置中重试")
+        hard_errors += 1
+        log(output or "Funnel 启用失败")
+        if hard_errors >= 3:
+            return False
+        time.sleep(5)
+    log("等待 Funnel 批准超时。" + (f" 最近输出：{last_output}" if last_output else ""))
     return False
 
 
