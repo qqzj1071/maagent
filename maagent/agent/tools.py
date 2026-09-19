@@ -176,12 +176,26 @@ def build_game_tools(service: Any) -> ToolRegistry:
     def open_emulator() -> str:
         return "模拟器已启动。" if service.start_emulator() else "启动模拟器失败。"
 
-    def open_arknights() -> str:
-        return service.open_arknights()
+    def open_arknights(version: str = "", enter: bool = True) -> str:
+        return service.open_arknights(version or None, enter=enter)
+
+    def enter_game() -> str:
+        return service.enter_game()
+
+    def open_operator(name: str) -> str:
+        return service.open_operator(name)
+
+    def get_operator_training(name: str) -> str:
+        return service.get_operator_training(name)
+
+    def focus_emulator() -> str:
+        return "已将模拟器窗口置于屏幕前台。" if service.focus_emulator() else "未找到模拟器窗口。"
 
     def screenshot() -> str:
         from maagent.control.popup import recognize
 
+        if service.focus_before_capture:
+            service.focus_emulator()
         image = service.screenshot()
         items = recognize(image)
         texts = " | ".join(i.text for i in items)[:400]
@@ -214,11 +228,55 @@ def build_game_tools(service: Any) -> ToolRegistry:
     registry.register(Tool(
         name="open_arknights",
         description=(
-            "打开《明日方舟》：自动启动模拟器、截图识别桌面上的「明日方舟」图标并点击，"
-            "确认游戏进入前台。用户想开始游戏或做日常时调用。"
+            "打开《明日方舟》并进入主界面：自动启动模拟器、启动游戏、点击 START/开始唤醒 进入主界面。"
+            "博士说『B服』时传 version='B服'，说『官服』时传 version='官服'；未指定则默认官服。"
+            "如果只想启动到开始界面、不自动进入，传 enter=false。"
         ),
-        parameters={"type": "object", "properties": {}},
+        parameters={
+            "type": "object",
+            "properties": {
+                "version": {"type": "string", "description": "游戏版本：'官服' 或 'B服'；未指定留空"},
+                "enter": {"type": "boolean", "description": "是否自动点击开始进入主界面，默认 true"},
+            },
+        },
         func=open_arknights,
+    ))
+    registry.register(Tool(
+        name="enter_game",
+        description="在明日方舟开始界面点击 START/开始唤醒，进入游戏主界面（若已停在开始界面时使用）。",
+        parameters={"type": "object", "properties": {}},
+        func=enter_game,
+    ))
+    registry.register(Tool(
+        name="open_operator",
+        description=(
+            "打开指定干员的详情页：自动进入干员列表、找到该干员并点进详情（如博士说『看看银灰』『打开风笛的详情』）。"
+        ),
+        parameters={
+            "type": "object",
+            "properties": {"name": {"type": "string", "description": "干员名称"}},
+            "required": ["name"],
+        },
+        func=open_operator,
+    ))
+    registry.register(Tool(
+        name="get_operator_training",
+        description=(
+            "查看指定干员的练度：自动打开其详情页并读取 等级 / 精英化 / 潜能数 / 信赖值 / 技能专精，"
+            "并进入模组界面读取模组详情（如博士问『XX练度怎么样』『XX练到多少了』）。"
+        ),
+        parameters={
+            "type": "object",
+            "properties": {"name": {"type": "string", "description": "干员名称"}},
+            "required": ["name"],
+        },
+        func=get_operator_training,
+    ))
+    registry.register(Tool(
+        name="focus_emulator",
+        description="把 MuMu 模拟器窗口切到屏幕前台。需要在屏幕上查看模拟器、或让博士看到画面时使用。",
+        parameters={"type": "object", "properties": {}},
+        func=focus_emulator,
     ))
     registry.register(Tool(
         name="screenshot",

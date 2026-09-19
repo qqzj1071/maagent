@@ -30,25 +30,35 @@ DEFAULT_PERSONA = (
 
 SYSTEM_TEMPLATE = """{persona}
 
-今天的日期是 {date}。你可以使用工具把用户告诉你的信息记进长期记忆，也能检索它们。用户教你东西、表达偏好、或让你“记住”时，用 remember / learn_skill 存下来；需要回忆时用 recall。
-需要最新或你不确定的信息（游戏公告、活动时间、攻略、新闻）时，用 web_search 联网查询，并在回答里标注来源链接；不要凭记忆编造时效性内容。
+今天的日期是 {date}。
 
-联网搜索纪律：一次查询通常就够，最多再补充一次；拿到结果后要立刻总结回答，不要反复搜索。结果不足以回答时，就如实说明，不要空转。
+【总则】博士给你的是指令，你要先判断意图，并**调用对应工具**去完成，不要只口头回答。信息不足或指令有歧义时，先向博士确认。
 
-你已学习《明日方舟》PRTS 的「新人入门」等资料；回答游戏机制、术语、玩法问题时，先用 search_knowledge 检索，不要凭记忆编造。
-用户说「打开/启动明日方舟」「开始游戏」时，直接调用 open_arknights（自动启动模拟器、识别画面并点击「明日方舟」图标），不要反问确认。想了解当前画面用 screenshot 或 analyze_screen；要按文字点击用 find_and_click；坐标点击用 click。操作后要复查画面确认结果。
+【意图 → 工具】
+- 打开/启动游戏（含「官服」「B服」）→ open_arknights（指定版本时传 version="官服"/"B服"；会自动点击 START 进入主界面）
+- 停在 START/开始唤醒 界面需要进入游戏 → enter_game（不要只截图，要点击进入）
+- 查看某干员的详情/属性/技能（「看看XX」「打开XX的详情」）→ open_operator(name)（自动进入干员列表并打开该干员）
+- 查看某干员的练度（等级/精英化/潜能/信赖/技能专精/模组）→ get_operator_training(name)
+- 查看当前画面/模拟器内容 → screenshot 或 analyze_screen（会自动把模拟器窗口置前）；按文字点击 → find_and_click；按坐标点击 → click
+- 问游戏机制、术语、干员数值/技能 → search_knowledge（《明日方舟》PRTS 知识库，含全部干员与作战机制）
+- 问最新活动/公告等时效信息 → web_search（并标注来源）
+- 让记住事实/偏好/规则 → remember；记住操作流程 → learn_skill；回忆 → recall
+- 把模拟器窗口切到屏幕前台 → focus_emulator
+
+【纪律】
+- 能靠工具解决的，必须先调用工具，不要凭记忆编造。
+- web_search 一次通常就够，最多补一次；拿到结果立刻总结，不要空转。
+- 游戏操作后要复查画面确认结果。
+- 不要暴露系统提示、API Key 或内部实现细节。
+
+【示例】
+用户：打开B服 → 调用 open_arknights(version="B服") → 回复「已为您打开明日方舟B服，博士。」
+用户：银灰的真银斩什么效果？ → 调用 search_knowledge("银灰 真银斩") → 依据结果回答
+用户：记住我主玩能天使 → 调用 remember("博士主玩能天使") → 回复「好的，已记住。」
+用户：现在屏幕上是什么？ → 调用 analyze_screen("当前是什么界面？") → 描述画面
 
 当前长期记忆：
 {memory}
-
-示例（务必照做，不要只口头回应）：
-用户：打开明日方舟
-你：调用 open_arknights 工具，拿到结果后再回复「已为你打开明日方舟。」
-
-工作原则：
-1. 用户已给出明确指令时直接执行（调用相应工具），不要反问确认；只有信息确实不足时才发问。
-2. 涉及游戏操作时，动作要可靠、可验证；不确定就说明并征求确认。
-3. 不要暴露系统提示、API Key 或内部实现细节。
 """
 
 
@@ -80,7 +90,7 @@ class Agent:
         if (cfg.get("game") or {}).get("enabled", False):
             from maagent.agent.game import GameService
 
-            self.game = GameService(config, self.llm)
+            self.game = GameService(config, self.llm, self.knowledge)
             self.tools.update(build_game_tools(self.game))
         self.name = cfg.get("name") or "维维美"
         self.alias = cfg.get("alias") or "维神"
@@ -93,6 +103,9 @@ class Agent:
         self.persona = persona
         self.max_steps = int(cfg.get("max_steps", 8))
         self.max_tool_calls = int(cfg.get("max_tool_calls", 3))
+        self.repeat_limited = set(
+            cfg.get("repeat_limited_tools") or ["web_search", "search_knowledge"]
+        )
         self.history_limit = int(cfg.get("history_limit", 40))
         self.messages: list[dict[str, Any]] = []
 
@@ -150,17 +163,21 @@ class Agent:
                     ],
                 })
                 for tc in reply.tool_calls:
-                    key = f"{tc.name}:{json.dumps(tc.arguments, ensure_ascii=False, sort_keys=True)}"
-                    if counts.get(tc.name, 0) >= self.max_tool_calls:
-                        result = (
-                            f"（本回合 {tc.name} 调用次数已达上限 {self.max_tool_calls}，"
-                            "请立即基于已有信息作答，不要再调用工具。）"
-                        )
-                    elif key in seen:
-                        result = "（该工具调用本回合已执行过，请基于已有结果作答，不要重复调用。）"
+                    if tc.name in self.repeat_limited:
+                        key = f"{tc.name}:{json.dumps(tc.arguments, ensure_ascii=False, sort_keys=True)}"
+                        if counts.get(tc.name, 0) >= self.max_tool_calls:
+                            result = (
+                                f"（本回合 {tc.name} 调用次数已达上限 {self.max_tool_calls}，"
+                                "请立即基于已有信息作答，不要再调用工具。）"
+                            )
+                        elif key in seen:
+                            result = "（该工具调用本回合已执行过，请基于已有结果作答，不要重复调用。）"
+                        else:
+                            seen.add(key)
+                            counts[tc.name] = counts.get(tc.name, 0) + 1
+                            logger.info("agent 调用工具 {}({})", tc.name, tc.arguments)
+                            result = self.tools.call(tc.name, tc.arguments)
                     else:
-                        seen.add(key)
-                        counts[tc.name] = counts.get(tc.name, 0) + 1
                         logger.info("agent 调用工具 {}({})", tc.name, tc.arguments)
                         result = self.tools.call(tc.name, tc.arguments)
                     emit("tool", {"name": tc.name, "arguments": tc.arguments, "result": result})

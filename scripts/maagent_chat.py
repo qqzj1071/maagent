@@ -89,6 +89,8 @@ def main() -> int:
             shutil.copyfile(bundled, knowledge)
         if knowledge.exists():
             agent_cfg["knowledge_file"] = str(knowledge)
+        # 截图等运行数据放到用户数据目录，避免散落在 exe 同目录（桌面）
+        agent_cfg.setdefault("game", {})["screenshot_dir"] = str(data / "screenshots")
 
     from loguru import logger
 

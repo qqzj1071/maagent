@@ -46,8 +46,12 @@ def run_chat(config: dict[str, Any]) -> int:
             print("、".join(agent.tools.names()))
             continue
 
+        print(f"{name}> 思考中……", flush=True)
         try:
-            reply = agent.chat(line, on_event=lambda kind, payload: print(f"  [工具] {payload['name']} -> {payload['result']}"))
+            reply = agent.chat(
+                line,
+                on_event=lambda kind, payload: print(f"  [工具] {payload['name']} -> {payload['result']}"),
+            )
         except Exception as e:
             print(f"（出错：{e}）")
             continue

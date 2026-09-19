@@ -105,7 +105,8 @@ agent:                            # 对话式 agent（OpenAI 兼容接口）
   vision_model: "glm-4.1v-thinking-flash"  # 视觉模型（免费，带图时使用）
   temperature: 0.5
   max_steps: 8                    # 单轮最多工具调用步数
-  max_tool_calls: 3               # 同一工具每回合最多调用次数（防搜索空转）
+  max_tool_calls: 3               # 受限工具每回合最多调用次数（防搜索空转）
+  repeat_limited_tools: ["web_search", "search_knowledge"]  # 仅这些工具做去重/限次，其余（截图等）可重复调用
   history_limit: 40               # 携带的历史消息条数
   timeout: 90
   memory_file: "config/agent_memory.json"  # 长期记忆（事实/偏好/技能）
@@ -118,8 +119,11 @@ agent:                            # 对话式 agent（OpenAI 兼容接口）
     proxy: ""                     # 如 http://127.0.0.1:7897；留空直连
   game:                           # 模拟器/游戏控制（视觉识别 + 点击）
     enabled: false                # 开启后允许 agent 启动模拟器、打开明日方舟、看画面
-    package: "com.hypergryph.arknights"  # 明日方舟包名（官服）
-    screenshot_dir: "logs/agent_game"
+    package: "com.hypergryph.arknights"  # 明日方舟默认包名（官服）
+    window_process: "MuMuNxDevice.exe"   # 模拟器窗口进程（用于置前）
+    focus_before_capture: true    # 看画面/截图前自动把模拟器窗口置前
+    screenshot_dir: "logs/agent_game"  # 截图目录（frozen 时自动改为用户数据目录）
+    max_screenshots: 50           # 最多保留最近多少张截图
   persona: ""                     # 自定义人设，留空用默认
 
 notify:
