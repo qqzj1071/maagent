@@ -6,6 +6,8 @@ app:
   language: zh_CN                # zh_CN | zh_TW | en | ja
   theme: light                   # light | dark
   autostart: false               # 开机自启动
+  schedule_warning: true         # 定时启动前弹出提醒
+  schedule_warning_minutes: 5    # 提前多少分钟提醒
   hotkeys:                       # 全局快捷键（作用于当前选中卡片）
     start: F8                    # 开始任务
     stop: F9                     # 强制结束任务

@@ -126,6 +126,7 @@ class SettingsPage(QWidget):
     cancelled = Signal()
     account_changed = Signal(str)
     account_send_url = Signal()
+    clear_cache_requested = Signal()
 
     def __init__(self, config: dict, icon: QIcon | None = None, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -475,6 +476,7 @@ class SettingsPage(QWidget):
         self.autostart_switch = ToggleSwitch(False, width=42, height=22)
         self.tray_switch = ToggleSwitch(True, width=42, height=22)
         self.email_log_switch = ToggleSwitch(False, width=42, height=22)
+        self.schedule_warning_switch = ToggleSwitch(True, width=42, height=22)
         rows = QWidget()
         rows_layout = QVBoxLayout(rows)
         rows_layout.setContentsMargins(0, 0, 0, 0)
@@ -482,6 +484,9 @@ class SettingsPage(QWidget):
         rows_layout.addWidget(self._toggle_row(t("settings.autostart"), self.autostart_switch))
         rows_layout.addWidget(self._toggle_row(t("settings.tray"), self.tray_switch))
         rows_layout.addWidget(self._toggle_row(t("settings.email_log"), self.email_log_switch))
+        rows_layout.addWidget(
+            self._toggle_row(t("settings.schedule_warning"), self.schedule_warning_switch)
+        )
         layout.addWidget(self._section(t("settings.general.section"), rows))
         layout.addStretch(1)
         return page
@@ -530,6 +535,20 @@ class SettingsPage(QWidget):
         version.setObjectName("SettingsPageDesc")
         version.setAlignment(Qt.AlignCenter)
         layout.addWidget(version)
+        layout.addSpacing(10)
+        hint = QLabel(t("settings.about.clear_hint"))
+        hint.setObjectName("SettingsPageDesc")
+        hint.setAlignment(Qt.AlignCenter)
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+        clear_button = QPushButton(t("settings.about.clear"))
+        clear_button.setCursor(Qt.PointingHandCursor)
+        clear_button.clicked.connect(self.clear_cache_requested.emit)
+        clear_row = QHBoxLayout()
+        clear_row.addStretch(1)
+        clear_row.addWidget(clear_button)
+        clear_row.addStretch(1)
+        layout.addLayout(clear_row)
         layout.addStretch(2)
         return page
 
@@ -550,6 +569,7 @@ class SettingsPage(QWidget):
 
         self.autostart_switch.setChecked(bool(app_cfg.get("autostart", False)))
         self.tray_switch.setChecked(bool(app_cfg.get("minimize_to_tray", True)))
+        self.schedule_warning_switch.setChecked(bool(app_cfg.get("schedule_warning", True)))
         email = (self.config.get("notify", {}) or {}).get("email", {}) or {}
         self.email_log_switch.setChecked(bool(email.get("send_log", False)))
 
@@ -565,6 +585,7 @@ class SettingsPage(QWidget):
             "theme": self.theme_group.value(),
             "autostart": self.autostart_switch.isChecked(),
             "minimize_to_tray": self.tray_switch.isChecked(),
+            "schedule_warning": self.schedule_warning_switch.isChecked(),
             "send_log": self.email_log_switch.isChecked(),
             "hotkeys": {
                 "start": self.hotkey_start.value(),

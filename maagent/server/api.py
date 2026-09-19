@@ -367,6 +367,13 @@ def get_latest_report(ctx: ServerContext, req: Request) -> tuple[int, dict[str, 
     return 200, {"report": ctx.controller.latest_report()}
 
 
+@route("POST", f"{API_PREFIX}/reports/clear")
+def clear_reports(ctx: ServerContext, req: Request) -> tuple[int, dict[str, Any]]:
+    authenticate(ctx, req)
+    ctx.controller.clear_reports()
+    return 200, {"ok": True}
+
+
 @route("GET", f"{API_PREFIX}/reports/detail")
 def get_report_detail(ctx: ServerContext, req: Request) -> tuple[int, dict[str, Any]]:
     authenticate(ctx, req)

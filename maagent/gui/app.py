@@ -313,6 +313,7 @@ class MaAgentWindow(QMainWindow):
         self.theme = app_cfg.get("theme", "light")
         self._quitting = False
         self._tray_notice_shown = False
+        self._warned_run: str | None = None
         self._tray_show_action = None
         self._tray_quit_action = None
         set_language(app_cfg.get("language", DEFAULT_LANGUAGE))
@@ -623,6 +624,7 @@ class MaAgentWindow(QMainWindow):
         self.settings_page.cancelled.connect(self._show_main)
         self.settings_page.account_changed.connect(self._on_account_changed)
         self.settings_page.account_send_url.connect(self._on_send_public_url)
+        self.settings_page.clear_cache_requested.connect(self._on_clear_cache)
         self.view_stack = QStackedWidget()
         self.view_stack.addWidget(main_page)
         self.view_stack.addWidget(self.settings_page)
@@ -661,6 +663,31 @@ class MaAgentWindow(QMainWindow):
         self.btn_start.setVisible(not is_workflow)
 
     # -- 日常工作流 ------------------------------------------------------ #
+    def _check_schedule_warning(self) -> None:
+        """Warn a few minutes before a scheduled run actually starts."""
+        app_cfg = self.config.get("app", {}) or {}
+        if not app_cfg.get("schedule_warning", True):
+            self._warned_run = None
+            return
+        minutes = int(app_cfg.get("schedule_warning_minutes", 5) or 5)
+        try:
+            nxt = self.scheduler.next_run()
+        except Exception:
+            return
+        if nxt is None:
+            self._warned_run = None
+            return
+        key = nxt.strftime("%Y-%m-%d %H:%M")
+        delta = (nxt - datetime.now()).total_seconds()
+        if 0 < delta <= minutes * 60:
+            if self._warned_run != key:
+                self._warned_run = key
+                label = nxt.strftime("%H:%M")
+                logger.info("定时提醒：{} 分钟后将启动日常（{}）", minutes, label)
+                self.notify("Maagent", t("tray.schedule_warning", minutes=minutes, time=label))
+        else:
+            self._warned_run = None
+
     def _sync_chain_config(self) -> None:
         """Push the current workflow UI state into the config for the scheduler."""
         self.config.setdefault("workflow", {})["chain"] = self.workflow_panel.collect()
@@ -682,6 +709,7 @@ class MaAgentWindow(QMainWindow):
         self.start_chain(software_list)
 
     def check_schedule(self) -> None:
+        self._check_schedule_warning()
         if self.controller.is_running():
             return
         self._sync_chain_config()
@@ -980,6 +1008,35 @@ class MaAgentWindow(QMainWindow):
         if email:
             self._send_public_url_email(email)
 
+    def _on_clear_cache(self) -> None:
+        log_dir = app_base_dir() / "logs"
+        reply = QMessageBox.question(
+            self,
+            t("about.clear.title"),
+            t("about.clear.message"),
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if reply != QMessageBox.Yes:
+            return
+        removed = 0
+        skipped = 0
+        if log_dir.is_dir():
+            for path in sorted(log_dir.rglob("*"), reverse=True):
+                try:
+                    if path.is_file():
+                        path.unlink()
+                        removed += 1
+                    elif path.is_dir():
+                        path.rmdir()
+                except OSError:
+                    skipped += 1
+        self.controller.clear_reports()
+        logger.info("已清除缓存：删除 {} 个文件（跳过 {} 个占用中）", removed, skipped)
+        message = t("about.clear.done", count=removed)
+        self.notify("Maagent", message)
+        QMessageBox.information(self, t("about.clear.title"), message)
+
     def _stop_embedded_server(self) -> None:
         if self._server_httpd is None:
             return
@@ -1042,6 +1099,7 @@ class MaAgentWindow(QMainWindow):
         app_cfg["theme"] = settings["theme"]
         app_cfg["autostart"] = settings["autostart"]
         app_cfg["minimize_to_tray"] = settings["minimize_to_tray"]
+        app_cfg["schedule_warning"] = settings.get("schedule_warning", True)
         app_cfg["hotkeys"] = settings["hotkeys"]
         self.config.setdefault("notify", {}).setdefault("email", {})[
             "send_log"

@@ -14,7 +14,7 @@ then emails a concise daily report.
 ```
 maagent/                 # Python package
   main.py                # CLI entry
-  adapters/              # maa.py (active), maaend.py / bgi.py (stubs)
+  adapters/              # maa.py (the active MAA adapter)
   control/
     process.py           # close MAA + MuMu emulator (MuMuManager)
     popup.py             # window find / PrintWindow capture / OCR / dismiss (+ find_text/ensure_visible)
@@ -28,7 +28,7 @@ maagent/                 # Python package
   core/scheduler.py      # 日常工作流 chain schedule (sequential / per-task, persisted state)
   core/workflow_config.py # pure chain config helpers (normalize/migrate/needs_save)
   report/generator.py    # concise report (start/end, errors, sanity, next deadline)
-  notify/email.py        # SMTP (QQ) ; notify/wechat.py (stub)
+  notify/email.py        # SMTP (QQ)
   i18n.py                # zh_CN / zh_TW / en / ja translation table + t()
   control/autostart.py   # HKCU ...\Run registry autostart
   gui/app.py             # PySide6 GUI entry (window, tray, cards, weekly/monthly, settings wiring)

@@ -268,6 +268,16 @@ class WorkflowController:
         with self._lock:
             return self._reports[-1] if self._reports else None
 
+    def clear_reports(self) -> None:
+        with self._lock:
+            self._reports.clear()
+        try:
+            if self.report_file.exists():
+                self.report_file.unlink()
+        except OSError as e:
+            logger.warning("清除报告文件失败: {}", e)
+        self._emit({"type": "reports_cleared"})
+
     # ------------------------------------------------------------------ #
     # logs / events
     # ------------------------------------------------------------------ #

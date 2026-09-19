@@ -313,6 +313,22 @@ async function openReport(id) {
   }
 }
 
+$('clearReportsBtn').addEventListener('click', async () => {
+  if (!reports.length) {
+    toast('暂无报告');
+    return;
+  }
+  if (!window.confirm('确定清空全部任务报告吗？')) return;
+  try {
+    await api('/reports/clear', { method: 'POST' });
+    reports = [];
+    renderReports();
+    toast('报告已清空');
+  } catch (err) {
+    toast(err.message);
+  }
+});
+
 $('modalClose').addEventListener('click', () => $('modal').classList.add('hidden'));
 $('modal').addEventListener('click', (event) => {
   if (event.target === $('modal')) $('modal').classList.add('hidden');
@@ -371,6 +387,9 @@ function connectEvents() {
         if (reports.length > 30) reports.pop();
         renderReports();
         toast('任务报告已生成 ' + ((data && data.status_label) || ''));
+      } else if (payload.type === 'reports_cleared') {
+        reports = [];
+        renderReports();
       }
     };
   } catch (e) {

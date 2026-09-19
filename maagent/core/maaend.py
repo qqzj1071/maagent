@@ -33,6 +33,41 @@ SHOP_ITEMS = {
     "item_gachabyproducts_weapongold": "武库配额",
     "item_diamond": "嵌晶玉",
 }
+# 信用点购物结束后，购买产生的 AddItemData 可能略晚于货架快照，留一点尾部余量
+CREDIT_SHOP_TAIL_SECONDS = 180
+
+
+def _parse_iso(value: str) -> datetime | None:
+    try:
+        return datetime.fromisoformat(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _credit_shop_window(lines: list[str]) -> tuple[str, str] | None:
+    """The credit-shopping time window from ``go-service.log``.
+
+    ``AddItemData`` fires for item gains from every task, so the report must
+    only count the ones that happen while the credit shop is running — never
+    the whole file (that would fold later reward batches into 信用点购物).
+    """
+    times = []
+    for line in lines:
+        if '"component":"creditshopping"' not in line:
+            continue
+        match = re.search(r'"time":"([^"]+)"', line)
+        if match:
+            times.append(match.group(1))
+    if not times:
+        return None
+    start = min(times)
+    end_dt = _parse_iso(max(times))
+    end = (
+        (end_dt + timedelta(seconds=CREDIT_SHOP_TAIL_SECONDS)).isoformat()
+        if end_dt is not None
+        else max(times)
+    )
+    return start, end
 
 class MaaEndOrchestrator(BaseWorkflow):
     """Runs 明日方舟：终末地 dailies by letting MaaEnd do the work.
@@ -297,15 +332,22 @@ class MaaEndOrchestrator(BaseWorkflow):
         purchases: dict[str, int] = {}
         gosvc = root / "go-service.log"
         if gosvc.exists():
-            for line in gosvc.read_text(encoding="utf-8", errors="replace").splitlines():
+            lines = gosvc.read_text(encoding="utf-8", errors="replace").splitlines()
+            window = _credit_shop_window(lines)
+            for line in lines:
                 if '"component":"AddItemData"' in line and '"item_id"' in line:
                     try:
                         obj = json.loads(line)
                     except Exception:
                         continue
                     item_id = obj.get("item_id")
-                    if item_id in SHOP_ITEMS:
-                        purchases[item_id] = purchases.get(item_id, 0) + int(obj.get("delta", 0))
+                    if item_id not in SHOP_ITEMS:
+                        continue
+                    if window is not None:
+                        stamp = str(obj.get("time") or "")
+                        if not (window[0] <= stamp <= window[1]):
+                            continue
+                    purchases[item_id] = purchases.get(item_id, 0) + int(obj.get("delta", 0))
                 elif '"component":"EssenceFilter"' in line and '"matched_total"' in line:
                     try:
                         details["essence"] = int(json.loads(line)["matched_total"])
