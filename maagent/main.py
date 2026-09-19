@@ -28,6 +28,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--serve", action="store_true", help="启动账号/远程控制 HTTP 服务")
     parser.add_argument("--serve-host", default=None, help="覆盖服务监听地址")
     parser.add_argument("--serve-port", type=int, default=None, help="覆盖服务监听端口")
+    parser.add_argument("--chat", action="store_true", help="与 agent 对话（命令行）")
     args = parser.parse_args(argv)
 
     base_dir = (
@@ -46,6 +47,11 @@ def main(argv: list[str] | None = None) -> int:
         from maagent.server.app import serve
 
         return serve(cfg, host=args.serve_host, port=args.serve_port)
+
+    if args.chat:
+        from maagent.agent.cli import run_chat
+
+        return run_chat(cfg)
 
     maa_cfg = cfg["adapters"]["maa"]
 

@@ -76,6 +76,7 @@ adapters:
     wait_seconds: 10
     emulator:
       manager_path: "D:/tools/MuMuPlayer/nx_main/MuMuManager.exe"
+      adb_path: "D:/tools/MuMuPlayer/nx_main/adb.exe"
       vmindex: 0
     popup_monitor:
       interval: 2.0
@@ -92,6 +93,34 @@ adapters:
     game_process: "Endfield.exe"
     game_start_timeout: 240     # 等待终末地进程启动
     task_timeout_seconds: 3600  # 等待任务结束（进程退出）的上限
+
+agent:                            # 对话式 agent（OpenAI 兼容接口）
+  enabled: false                  # 预留：GUI/手机端是否展示对话入口
+  name: "维维美"                   # agent 的名字
+  alias: "小维、维神"              # 昵称/别名
+  provider: zhipu                 # 目前仅内置智谱预设
+  base_url: "https://open.bigmodel.cn/api/paas/v4"
+  api_key: ""                     # 智谱 API Key；也可用环境变量 ZHIPU_API_KEY
+  model: "glm-4.5-flash"          # 主脑（文本 + 工具调用，免费；glm-4.7-flash 高峰期常过载）
+  vision_model: "glm-4.1v-thinking-flash"  # 视觉模型（免费，带图时使用）
+  temperature: 0.5
+  max_steps: 8                    # 单轮最多工具调用步数
+  max_tool_calls: 3               # 同一工具每回合最多调用次数（防搜索空转）
+  history_limit: 40               # 携带的历史消息条数
+  timeout: 90
+  memory_file: "config/agent_memory.json"  # 长期记忆（事实/偏好/技能）
+  knowledge_file: "config/agent_knowledge.json"  # PRTS 知识库（scripts/build_knowledge.py 生成）
+  search:                         # 免费联网搜索（免 key、零调用费）
+    enabled: true
+    backend: auto                 # auto | duckduckgo | bing
+    count: 5                      # 默认返回条数
+    timeout: 15
+    proxy: ""                     # 如 http://127.0.0.1:7897；留空直连
+  game:                           # 模拟器/游戏控制（视觉识别 + 点击）
+    enabled: false                # 开启后允许 agent 启动模拟器、打开明日方舟、看画面
+    package: "com.hypergryph.arknights"  # 明日方舟包名（官服）
+    screenshot_dir: "logs/agent_game"
+  persona: ""                     # 自定义人设，留空用默认
 
 notify:
   email:

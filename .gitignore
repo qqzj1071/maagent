@@ -10,6 +10,8 @@ dist/
 logs/
 config/config.yaml
 config/config.test.yaml
+config/agent_memory.json
+config/agent_knowledge.json
 *.export.json
 .idea/
 .vscode/
