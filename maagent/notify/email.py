@@ -12,6 +12,38 @@ from typing import Any
 
 from loguru import logger
 
+# Scenes in which the task log can be attached to the report email. These map
+# 1:1 to the report statuses set by the workflows (`RunReport.status`).
+LOG_STATUSES = ("success", "warning", "failed", "stopped")
+_LOG_STATUS_ALIASES = {"timeout": "failed"}
+
+
+def normalize_log_statuses(value: Any) -> list[str]:
+    """Normalize a ``send_log_on`` value (list / str / legacy bool) to keys."""
+    if value is None:
+        return []
+    if isinstance(value, bool):
+        return list(LOG_STATUSES) if value else []
+    if isinstance(value, str):
+        value = [value]
+    if not isinstance(value, (list, tuple, set)):
+        return []
+    return [str(item).strip().lower() for item in value if str(item).strip()]
+
+
+def should_attach_log(config: dict[str, Any], status: str | None) -> bool:
+    """Whether the log should be attached for this report status.
+
+    Prefers the new ``send_log_on`` list; falls back to the legacy ``send_log``
+    boolean for configs written before this option existed.
+    """
+    if "send_log_on" in config:
+        when = normalize_log_statuses(config.get("send_log_on"))
+    else:
+        when = normalize_log_statuses(config.get("send_log", False))
+    key = _LOG_STATUS_ALIASES.get((status or "").lower(), (status or "").lower())
+    return key in when
+
 
 class EmailNotifier:
     def __init__(self, config: dict[str, Any], log_dir: str | Path | None = None) -> None:
@@ -24,7 +56,7 @@ class EmailNotifier:
         path = self.log_dir / f"maagent_{date.today():%Y-%m-%d}.log"
         return path if path.exists() else None
 
-    def send(self, subject: str, html: str) -> bool:
+    def send(self, subject: str, html: str, status: str | None = None) -> bool:
         cfg = self.config
         if not cfg.get("enabled"):
             logger.info("邮件通知未启用，跳过发送")
@@ -34,7 +66,7 @@ class EmailNotifier:
             logger.warning("邮件收件人为空，跳过发送")
             return False
 
-        log_path = self._log_attachment() if cfg.get("send_log") else None
+        log_path = self._log_attachment() if should_attach_log(cfg, status) else None
         if log_path is not None:
             msg = MIMEMultipart()
             msg.attach(MIMEText(html, "html", "utf-8"))

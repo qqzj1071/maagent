@@ -115,6 +115,8 @@ def public_account(account: dict[str, Any]) -> dict[str, Any]:
     return {
         "id": account["id"],
         "email": account["email"],
+        "username": account.get("username"),
+        "kind": account.get("kind") or "email",
         "phone": account.get("phone"),
         "email_verified": bool(account.get("email_verified")),
         "phone_verified": bool(account.get("phone_verified")),
@@ -215,9 +217,7 @@ def login(ctx: ServerContext, req: Request) -> tuple[int, dict[str, Any]]:
     if not login_name or not password:
         raise ApiError(400, "bad_request", "请输入账号与密码")
     try:
-        account = _account_service(ctx).login(
-            login_name.lower() if "@" in login_name else login_name, password
-        )
+        account = _account_service(ctx).login(login_name, password)
     except AccountError as e:
         _raise_account(e)
 

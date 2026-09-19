@@ -107,7 +107,7 @@ notify:
     webhook_url: ""
 
 server:                          # 账号 / 手机远程控制服务（公网直连）
-  enabled: false                 # true 时随 GUI 启动；GUI 与手机共用同一工作流控制器
+  enabled: true                  # true 时随 GUI 启动；GUI 与手机共用同一工作流控制器（需先登录账号）
   host: "tailscale"              # "tailscale"=仅监听 127.0.0.1，供 Tailscale Funnel/Serve 代理（推荐）；也可填 0.0.0.0 或具体 IP
   port: 8765
   db_path: "config/accounts.db"  # SQLite 数据库位置

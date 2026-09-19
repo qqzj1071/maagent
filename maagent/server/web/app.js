@@ -60,17 +60,21 @@ function showAuth() {
   $('mainView').classList.add('hidden');
 }
 
+function accountName() {
+  return account.username || account.email || '';
+}
+
 function showMain() {
   $('authView').classList.add('hidden');
   $('mainView').classList.remove('hidden');
-  $('whoami').textContent = account.email || '';
+  $('whoami').textContent = accountName();
 }
 
 function onLoggedIn(data) {
   token = data.token || '';
   account = data.account || {};
   localStorage.setItem(TOKEN_KEY, token);
-  localStorage.setItem(EMAIL_KEY, account.email || '');
+  localStorage.setItem(EMAIL_KEY, accountName());
   showMain();
   refreshAll();
   connectEvents();

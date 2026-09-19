@@ -127,7 +127,7 @@ send email.
   (otherwise the 5s-debounced autosave makes the status lag).
 - An **empty `days` list means "never"** (only `None`/missing means every day) —
   see `Scheduler._days`.
-- Only MAA/MaaEnd are in the chain (BetterGI is still a stub); `--workflow` runs
+- Only MAA/MaaEnd are in the chain; `--workflow` runs
   the configured chain headlessly for testing.
 
 ## MaaEnd (终末地) — `--maaend`
@@ -250,15 +250,29 @@ Output `dist\maagent.exe` (~140 MB onefile; first launch unpacks, ~10-30 s).
   SQLite accounts (`store.py`), PBKDF2 passwords + sha256-digest Bearer tokens
   (`security.py`), shared `AccountService` (`accounts.py`), routes (`api.py`),
   static web assets (`web/`, `web_assets.py`).
-- The GUI embeds it (settings → 账户 logs in; `server.enabled` + `account_email`
+- The GUI embeds it (settings → 账户 logs in; `server.enabled` + `account_login`
   gate it) and shares one `WorkflowController` with it (`gui/controller_bridge.py`
   relays events to Qt). CLI headless mode: `python -m maagent.main --serve`.
 - The phone client is the built-in **PWA** in `maagent/server/web/` (no app
   install); expose it over HTTPS with **Tailscale Funnel** (`tailscale funnel
-  8765`), so the phone needs no VPN. The web app talks to same-origin `/api/v1`.
+  --bg 8765`), so the phone needs no VPN. The web app talks to same-origin `/api/v1`.
+- **One-click phone setup**: `control/tailscale.py` downloads + silently installs
+  Tailscale (`tailscale-setup-latest.exe`, the app already runs elevated), opens
+  the browser login (`tailscale up`), then runs `tailscale funnel --bg --yes
+  <port>` (opening the approval URL on first enable). `gui/phone.py`
+  (`PhoneRemoteWorker` / `PhoneRemoteDialog`) drives it from the 手机远程 settings
+  page, and `MaAgentWindow._maybe_offer_phone_setup` prompts on first launch
+  (`server.auto_setup` / `server.setup_prompted`).
+- Because Tailscale serve/funnel only proxy to `http://127.0.0.1`, `host:
+  "tailscale"` now binds **127.0.0.1** (not the Tailscale IP) in
+  `server/app.py:create_server`.
 - The server prefers an external `web/` next to the exe (`dist/web/`), so web
   edits only need a copy + restart, not a rebuild.
-- Not logged in on the PC → the remote service does not start. Task reports go
+- Not logged in on the PC → the remote service does not start. Accounts are
+  either email accounts (verification code) or **local accounts** (`kind='local'`,
+  username + password, no email; created from the settings UI so a fresh PC can
+  sign in without SMTP). `server.account_login` holds the login id and gates the
+  service; `server.account_email` is only set for email accounts. Task reports go
   to `server.account_email`; the first login / account change emails that
   address the phone web URL (`server.public_url` or the Tailscale Funnel name).
 

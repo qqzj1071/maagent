@@ -6,6 +6,22 @@ from loguru import logger
 
 from maagent.control.weekly import WEEKDAY_NAMES
 from maagent.i18n import DEFAULT_LANGUAGE, LANGUAGES
+from maagent.notify.email import LOG_STATUSES, normalize_log_statuses
+
+_SEND_LOG_LABELS = {
+    "success": "任务完成",
+    "warning": "子任务报错",
+    "failed": "失败",
+    "stopped": "急停",
+}
+
+
+def _fmt_send_log(email: dict) -> str:
+    when = set(
+        normalize_log_statuses(email.get("send_log_on", email.get("send_log", False)))
+    )
+    labels = [_SEND_LOG_LABELS[key] for key in LOG_STATUSES if key in when]
+    return "、".join(labels) if labels else "关"
 
 
 def _fmt_days(days) -> str:
@@ -50,7 +66,7 @@ def config_snapshot(config: dict) -> dict[str, str]:
         "绿票商店": _onoff(monthly.get("green", {}).get("enabled", False)),
         "黄票商店": _onoff(monthly.get("yellow", {}).get("enabled", False)),
         "任务完成后自动关闭": _onoff(workflow.get("auto_close", False)),
-        "发送任务日志到邮箱": _onoff(email.get("send_log", False)),
+        "发送任务报告到邮箱": _fmt_send_log(email),
         "开始任务快捷键": str(hotkeys.get("start", "F8")),
         "强制结束快捷键": str(hotkeys.get("stop", "F9")),
         "工作流定时": _onoff(chain.get("enabled", False)),

@@ -28,7 +28,9 @@ def send_report(config: dict[str, Any], report: RunReport) -> bool:
         email_cfg["enabled"] = True
     log_dir = (config.get("app", {}) or {}).get("log_dir", "logs")
     subject = f"[Maagent] {report.game}日常 - {report.status_label}"
-    return EmailNotifier(email_cfg, log_dir=log_dir).send(subject, report.to_html())
+    return EmailNotifier(email_cfg, log_dir=log_dir).send(
+        subject, report.to_html(), status=report.status
+    )
 
 
 class BaseWorkflow:

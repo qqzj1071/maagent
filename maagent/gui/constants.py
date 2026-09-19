@@ -6,7 +6,6 @@ from maagent.i18n import t
 SOFTWARE_META: dict[str, tuple[str, str]] = {
     "maa": ("MAA", "card.maa.desc"),
     "maaend": ("MaaEnd", "card.maaend.desc"),
-    "bgi": ("BetterGI", "card.bgi.desc"),
 }
 
 WORKFLOW_KEY = "workflow"

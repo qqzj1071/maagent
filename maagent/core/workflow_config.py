@@ -5,7 +5,7 @@ from uuid import uuid4
 
 CHAIN_SOFTWARE = ("maa", "maaend")
 ALL_DAYS = list(range(7))
-SOFTWARE_LABELS = {"maa": "MAA", "maaend": "MaaEnd", "bgi": "BetterGI"}
+SOFTWARE_LABELS = {"maa": "MAA", "maaend": "MaaEnd"}
 
 
 def software_label(key: str) -> str:

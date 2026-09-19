@@ -6,6 +6,7 @@ venv/
 build/
 dist/
 *.spec
+!maagent.release.spec
 logs/
 config/config.yaml
 config/config.test.yaml

@@ -11,6 +11,8 @@ SCHEMA = """
 CREATE TABLE IF NOT EXISTS accounts (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     email         TEXT NOT NULL UNIQUE,
+    username      TEXT,
+    kind          TEXT NOT NULL DEFAULT 'email',
     phone         TEXT UNIQUE,
     password_hash TEXT NOT NULL,
     email_verified INTEGER NOT NULL DEFAULT 0,
@@ -75,7 +77,21 @@ class AccountStore:
         self._conn.row_factory = sqlite3.Row
         with self._lock:
             self._conn.executescript(SCHEMA)
+            self._migrate()
             self._conn.commit()
+
+    def _migrate(self) -> None:
+        """Add columns introduced after the first release (idempotent)."""
+        columns = {row["name"] for row in self._conn.execute("PRAGMA table_info(accounts)")}
+        if "username" not in columns:
+            self._conn.execute("ALTER TABLE accounts ADD COLUMN username TEXT")
+        if "kind" not in columns:
+            self._conn.execute(
+                "ALTER TABLE accounts ADD COLUMN kind TEXT NOT NULL DEFAULT 'email'"
+            )
+        self._conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_username ON accounts (username)"
+        )
 
     def close(self) -> None:
         with self._lock:
@@ -107,6 +123,26 @@ class AccountStore:
         assert account is not None
         return account
 
+    def create_local_account(self, username: str, password_hash: str) -> dict[str, Any]:
+        """Create a local (no-email) account; ``email`` holds a reserved placeholder."""
+        now = iso(utcnow())
+        username = username.strip().lower()
+        email = f"{username}@local.invalid"
+        with self._lock:
+            try:
+                cur = self._conn.execute(
+                    "INSERT INTO accounts (email, username, kind, password_hash,"
+                    " email_verified, created_at, updated_at)"
+                    " VALUES (?, ?, 'local', ?, 1, ?, ?)",
+                    (email, username, password_hash, now, now),
+                )
+                self._conn.commit()
+            except sqlite3.IntegrityError as e:
+                raise DuplicateAccount("username") from e
+        account = self.get_account_by_id(cur.lastrowid)
+        assert account is not None
+        return account
+
     def get_account_by_id(self, account_id: int) -> dict[str, Any] | None:
         with self._lock:
             row = self._conn.execute(
@@ -128,12 +164,18 @@ class AccountStore:
             ).fetchone()
         return self._account(row)
 
+    def get_account_by_username(self, username: str) -> dict[str, Any] | None:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM accounts WHERE username = ?", (username.strip().lower(),)
+            ).fetchone()
+        return self._account(row)
+
     def get_account_by_login(self, login: str) -> dict[str, Any] | None:
-        return (
-            self.get_account_by_email(login)
-            if "@" in login
-            else self.get_account_by_phone(login)
-        )
+        login = login.strip()
+        if "@" in login:
+            return self.get_account_by_email(login)
+        return self.get_account_by_username(login) or self.get_account_by_phone(login)
 
     def set_last_login(self, account_id: int) -> None:
         now = iso(utcnow())
@@ -155,6 +197,21 @@ class AccountStore:
                 self._conn.commit()
             except sqlite3.IntegrityError as e:
                 raise DuplicateAccount("phone") from e
+        return self.get_account_by_id(account_id)
+
+    def update_email(self, account_id: int, email: str) -> dict[str, Any] | None:
+        """Attach a verified email to an account (e.g. a local account)."""
+        now = iso(utcnow())
+        with self._lock:
+            try:
+                self._conn.execute(
+                    "UPDATE accounts SET email = ?, email_verified = 1, kind = 'email',"
+                    " updated_at = ? WHERE id = ?",
+                    (email.strip().lower(), now, account_id),
+                )
+                self._conn.commit()
+            except sqlite3.IntegrityError as e:
+                raise DuplicateAccount("email") from e
         return self.get_account_by_id(account_id)
 
     def update_password(self, account_id: int, password_hash: str) -> None:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from datetime import datetime
@@ -335,6 +336,9 @@ class MaAgentWindow(QMainWindow):
         self.schedule_timer.timeout.connect(self.check_schedule)
         self._build_ui()
         self._last_saved = config_snapshot(self.config)
+        if self._sync_account_name():
+            self._update_account_chip()
+            self.save_settings()
         self._setup_tray()
         self._register_hotkeys()
         self.bridge.message.connect(self.append_log)
@@ -345,7 +349,7 @@ class MaAgentWindow(QMainWindow):
         adapters = self.config.get("adapters", {}) or {}
         meta = software_meta()
         keys = list(meta.keys())
-        keys += [k for k in adapters if k not in keys]
+        keys += [k for k in adapters if k not in keys and k != "bgi"]
         defs = []
         for key in keys:
             name, desc = meta.get(key, (key.upper(), ""))
@@ -524,7 +528,8 @@ class MaAgentWindow(QMainWindow):
         inner.addStretch(1)
         left_col.addWidget(scroll, 1)
 
-        auto_row = QHBoxLayout()
+        self.maa_auto_close_row = QWidget()
+        auto_row = QHBoxLayout(self.maa_auto_close_row)
         auto_row.setContentsMargins(4, 0, 4, 0)
         auto_row.setSpacing(8)
         auto_label = QLabel(t("option.auto_close"))
@@ -538,7 +543,7 @@ class MaAgentWindow(QMainWindow):
         )
         self.auto_close_switch.toggled.connect(self.on_option_changed)
         auto_row.addWidget(self.auto_close_switch)
-        left_col.addLayout(auto_row)
+        left_col.addWidget(self.maa_auto_close_row)
 
         self.left_panel = QWidget()
         self.left_panel.setObjectName("LeftPanel")
@@ -625,6 +630,7 @@ class MaAgentWindow(QMainWindow):
         self.settings_page.account_changed.connect(self._on_account_changed)
         self.settings_page.account_send_url.connect(self._on_send_public_url)
         self.settings_page.clear_cache_requested.connect(self._on_clear_cache)
+        self.settings_page.phone_configured.connect(self._on_phone_configured)
         self.view_stack = QStackedWidget()
         self.view_stack.addWidget(main_page)
         self.view_stack.addWidget(self.settings_page)
@@ -635,6 +641,40 @@ class MaAgentWindow(QMainWindow):
         if needs_save:
             self.save_timer.start()
         self.select_software(WORKFLOW_KEY)
+        QTimer.singleShot(1500, self._maybe_offer_phone_setup)
+
+    def _on_phone_configured(self, url: str) -> None:
+        url = (url or "").strip()
+        if not url:
+            return
+        self.config.setdefault("server", {})["public_url"] = url
+        self.save_settings()
+        email = str((self.config.get("server", {}) or {}).get("account_email") or "").strip()
+        if email:
+            self._send_public_url_email(email)
+
+    def _maybe_offer_phone_setup(self) -> None:
+        server_cfg = self.config.setdefault("server", {})
+        if not server_cfg.get("auto_setup", True) or server_cfg.get("setup_prompted"):
+            return
+        from maagent.control import tailscale as ts
+
+        server_cfg["setup_prompted"] = True
+        self.save_settings()
+        if ts.is_installed() and ts.is_logged_in() and ts.funnel_enabled():
+            return
+        reply = QMessageBox.question(
+            self,
+            t("phone.offer.title"),
+            t("phone.offer.message"),
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.Yes,
+        )
+        if reply != QMessageBox.Yes:
+            return
+        self.open_settings()
+        self.settings_page.select_page(1)
+        self.settings_page.configure_phone()
 
     def _on_card_enabled(self, key: str, enabled: bool) -> None:
         adapters = self.config.setdefault("adapters", {})
@@ -656,6 +696,8 @@ class MaAgentWindow(QMainWindow):
         self.monthly_panel.setVisible(is_maa)
         self.workflow_panel.setVisible(is_workflow)
         self.left_panel.setVisible(key in ("maa", WORKFLOW_KEY))
+        if hasattr(self, "maa_auto_close_row"):
+            self.maa_auto_close_row.setVisible(key == "maa")
         if hasattr(self, "maaend_auto_close_row"):
             self.maaend_auto_close_row.setVisible(key == "maaend")
         # 工作流界面用自己的「立即执行 / 停止」，底部的关闭与开始按钮无意义
@@ -946,7 +988,8 @@ class MaAgentWindow(QMainWindow):
         server_cfg = self.config.get("server", {}) or {}
         if not server_cfg.get("enabled"):
             return
-        if not str(server_cfg.get("account_email") or "").strip():
+        login = self._account_login()
+        if not login:
             logger.info("未登录账号，暂不启动远程服务")
             return
         if self._server_httpd is not None:
@@ -985,18 +1028,66 @@ class MaAgentWindow(QMainWindow):
         if EmailNotifier(email_cfg).send_to(email, "Maagent 手机网页地址", html):
             logger.info("已发送手机网页地址到 {}", email)
 
-    def _on_account_changed(self, email: str) -> None:
+    def _account_login(self) -> str:
+        server_cfg = self.config.get("server", {}) or {}
+        return str(
+            server_cfg.get("account_login") or server_cfg.get("account_email") or ""
+        ).strip()
+
+    def _sync_account_name(self) -> bool:
+        """Backfill display name / phone for sessions logged in before these fields."""
+        server_cfg = self.config.get("server", {}) or {}
+        login = self._account_login()
+        if not login:
+            return False
+        need_name = not str(server_cfg.get("account_name") or "").strip()
+        need_phone = not str(server_cfg.get("account_phone") or "").strip()
+        if not need_name and not need_phone:
+            return False
+        try:
+            from maagent.server.store import AccountStore
+
+            db_path = str(server_cfg.get("db_path", "config/accounts.db"))
+            store = AccountStore(db_path)
+            account = store.get_account_by_login(login)
+            store.close()
+        except Exception:
+            return False
+        if not account:
+            return False
+        changed = False
+        if need_name:
+            self.config["server"]["account_name"] = str(
+                account.get("username") or account.get("email") or login
+            )
+            changed = True
+        if need_phone:
+            phone = str(account.get("phone") or "").strip()
+            if phone:
+                self.config["server"]["account_phone"] = phone
+                changed = True
+        return changed
+
+    def _on_account_changed(self, login: str, name: str = "", phone: str = "") -> None:
         server_cfg = self.config.setdefault("server", {})
-        email = (email or "").strip()
-        server_cfg["account_email"] = email
+        login = (login or "").strip()
+        name = (name or "").strip()
+        server_cfg["account_login"] = login
+        server_cfg["account_name"] = name or login
+        server_cfg["account_phone"] = (phone or "").strip()
+        # A local account has no email; only email logins get report recipients.
+        server_cfg["account_email"] = login if "@" in login else ""
         self.save_settings()
         self._update_account_chip()
-        if not email:
+        if not login:
             self._stop_embedded_server()
             logger.info("已退出账号，远程服务已停止")
             return
-        logger.info("账号已登录: {}", email)
+        logger.info("账号已登录: {}", login)
         self._start_embedded_server()
+        email = str(server_cfg.get("account_email") or "").strip()
+        if not email:
+            return
         last_notified = str(server_cfg.get("last_notified_email") or "").strip()
         if email != last_notified:
             self._send_public_url_email(email)
@@ -1007,6 +1098,8 @@ class MaAgentWindow(QMainWindow):
         email = str((self.config.get("server", {}) or {}).get("account_email") or "").strip()
         if email:
             self._send_public_url_email(email)
+        else:
+            logger.warning("当前为本机账号（无邮箱），无法发送手机网页地址邮件")
 
     def _on_clear_cache(self) -> None:
         log_dir = app_base_dir() / "logs"
@@ -1077,9 +1170,11 @@ class MaAgentWindow(QMainWindow):
     def _update_account_chip(self) -> None:
         if not hasattr(self, "account_chip"):
             return
-        email = str((self.config.get("server", {}) or {}).get("account_email") or "").strip()
+        server_cfg = self.config.get("server", {}) or {}
+        login = self._account_login()
+        name = str(server_cfg.get("account_name") or login).strip()
         self.account_chip.setText(
-            t("account.chip.logged", email=email) if email else t("account.chip.none")
+            t("account.chip.logged", email=name) if login else t("account.chip.none")
         )
         self.account_chip.setToolTip(t("settings.tab.account"))
 
@@ -1101,9 +1196,17 @@ class MaAgentWindow(QMainWindow):
         app_cfg["minimize_to_tray"] = settings["minimize_to_tray"]
         app_cfg["schedule_warning"] = settings.get("schedule_warning", True)
         app_cfg["hotkeys"] = settings["hotkeys"]
-        self.config.setdefault("notify", {}).setdefault("email", {})[
-            "send_log"
-        ] = settings["send_log"]
+        smtp = settings.get("smtp") or {}
+        email_cfg = self.config.setdefault("notify", {}).setdefault("email", {})
+        email_cfg["smtp_host"] = smtp.get("host") or "smtp.qq.com"
+        try:
+            email_cfg["smtp_port"] = int(smtp.get("port") or 465)
+        except (TypeError, ValueError):
+            email_cfg["smtp_port"] = 465
+        email_cfg["username"] = smtp.get("username", "")
+        email_cfg["password"] = smtp.get("password", "")
+        email_cfg["send_log_on"] = list(settings.get("send_log_on", []))
+        email_cfg.pop("send_log", None)
 
         set_autostart(settings["autostart"])
         self.minimize_to_tray = settings["minimize_to_tray"]
@@ -1234,6 +1337,7 @@ class MaAgentWindow(QMainWindow):
 
 
 def main() -> int:
+    os.chdir(app_base_dir())
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
     app.setQuitOnLastWindowClosed(False)

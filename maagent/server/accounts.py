@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from datetime import timedelta
 from typing import Any
 
@@ -14,8 +15,14 @@ from maagent.server.security import (
 )
 from maagent.server.store import AccountStore, DuplicateAccount, utcnow
 
-PURPOSES = ("register", "reset_password")
-PURPOSE_LABELS = {"register": "注册账号", "reset_password": "重置密码"}
+PURPOSES = ("register", "reset_password", "bind_email")
+PURPOSE_LABELS = {
+    "register": "注册账号",
+    "reset_password": "重置密码",
+    "bind_email": "绑定邮箱",
+}
+USERNAME_RE = re.compile(r"^[a-z0-9_.-]{3,32}$")
+PHONE_RE = re.compile(r"^\+?\d{6,15}$")
 
 DEFAULT_SETTINGS: dict[str, Any] = {
     "code_ttl_minutes": 10,
@@ -83,6 +90,8 @@ class AccountService:
         account = self.store.get_account_by_email(email)
         if purpose == "register" and account is not None:
             raise AccountError("email_exists", "该邮箱已注册")
+        if purpose == "bind_email" and account is not None:
+            raise AccountError("email_exists", "该邮箱已被其它账号使用")
         if purpose == "reset_password" and account is None:
             raise AccountError("email_not_found", "该邮箱未注册")
 
@@ -125,6 +134,26 @@ class AccountService:
                 raise AccountError("phone_exists", "该手机号已绑定其它账号") from e
             raise AccountError("email_exists", "该邮箱已注册") from e
 
+    def create_local(self, username: str, password: str) -> dict[str, Any]:
+        """Create a local account that needs no email verification.
+
+        Used on a fresh machine so the owner can sign in and start the remote
+        service without configuring SMTP. The phone web can then sign in with
+        the same username + password.
+        """
+        username = (username or "").strip().lower()
+        if not USERNAME_RE.match(username):
+            raise AccountError("bad_username", "用户名需为 3-32 位字母、数字或 _ . -")
+        minimum = self._int("min_password_length", 8)
+        if len(password) < minimum:
+            raise AccountError("weak_password", f"密码至少需要 {minimum} 位")
+        if self.store.get_account_by_username(username) is not None:
+            raise AccountError("username_exists", "该用户名已被使用")
+        try:
+            return self.store.create_local_account(username, hash_password(password))
+        except DuplicateAccount as e:
+            raise AccountError("username_exists", "该用户名已被使用") from e
+
     def login(self, login_name: str, password: str) -> dict[str, Any]:
         account = self.store.get_account_by_login(login_name)
         if account is None or not verify_password(password, account["password_hash"]):
@@ -132,6 +161,42 @@ class AccountService:
         if account.get("status") != "active":
             raise AccountError("forbidden", "账号已被禁用")
         return account
+
+    def bind_email(self, login: str, email: str, code: str) -> dict[str, Any]:
+        """Verify a code sent to ``email`` and attach it to the logged-in account.
+
+        Used by local accounts so they can receive task reports and sign in with
+        an email, without needing a separate email-account registration.
+        """
+        account = self.store.get_account_by_login(login)
+        if account is None:
+            raise AccountError("not_found", "账号不存在")
+        email = (email or "").strip().lower()
+        existing = self.store.get_account_by_email(email)
+        if existing is not None and int(existing["id"]) != int(account["id"]):
+            raise AccountError("email_exists", "该邮箱已被其它账号使用")
+        max_attempts = self._int("max_code_attempts", 5)
+        if not self.store.consume_email_code(
+            email, "bind_email", code_digest(code), max_attempts
+        ):
+            raise AccountError("bad_code", "验证码错误或已过期")
+        return self.store.update_email(int(account["id"]), email)
+
+    def bind_phone(self, login: str, phone: str) -> dict[str, Any]:
+        """Bind a phone number (no verification code) so it can be used to log in."""
+        account = self.store.get_account_by_login(login)
+        if account is None:
+            raise AccountError("not_found", "账号不存在")
+        phone = (phone or "").strip()
+        if not PHONE_RE.match(phone):
+            raise AccountError("bad_phone", "手机号格式不正确")
+        existing = self.store.get_account_by_phone(phone)
+        if existing is not None and int(existing["id"]) != int(account["id"]):
+            raise AccountError("phone_exists", "该手机号已绑定其它账号")
+        try:
+            return self.store.update_phone(int(account["id"]), phone)
+        except DuplicateAccount as e:
+            raise AccountError("phone_exists", "该手机号已绑定其它账号") from e
 
     def reset_password(self, email: str, code: str, new_password: str) -> dict[str, Any]:
         account = self.store.get_account_by_email(email)

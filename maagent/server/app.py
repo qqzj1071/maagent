@@ -32,13 +32,9 @@ def create_server(
     settings = ctx.settings
     bind_host = host if host is not None else str(settings.get("host") or "0.0.0.0")
     if bind_host.lower() == "tailscale":
-        tailscale_ip = detect_tailscale_ip()
-        if tailscale_ip:
-            bind_host = tailscale_ip
-            logger.info("账号服务仅监听 Tailscale 地址 {}", tailscale_ip)
-        else:
-            bind_host = "0.0.0.0"
-            logger.warning("未检测到 Tailscale 地址，回退监听 0.0.0.0")
+        # Tailscale serve/funnel only proxy to http://127.0.0.1, so bind loopback.
+        bind_host = "127.0.0.1"
+        logger.info("账号服务仅监听 127.0.0.1（供 Tailscale Funnel/Serve 代理）")
     bind_port = int(port if port is not None else settings.get("port") or 8765)
     httpd = ApiServer((bind_host, bind_port), ctx)
 

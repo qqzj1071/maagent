@@ -1,4 +1,5 @@
 import argparse
+import os
 import sys
 from pathlib import Path
 
@@ -29,6 +30,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--serve-port", type=int, default=None, help="覆盖服务监听端口")
     args = parser.parse_args(argv)
 
+    base_dir = (
+        Path(sys.executable).resolve().parent
+        if getattr(sys, "frozen", False)
+        else Path(__file__).resolve().parent.parent
+    )
+    os.chdir(base_dir)
     default_config = Path(__file__).resolve().parent.parent / "config" / "config.yaml"
     config_path = args.config or str(default_config)
     cfg = load_config(config_path)
