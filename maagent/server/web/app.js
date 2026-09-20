@@ -112,7 +112,7 @@ document.querySelectorAll('.toggle-pw').forEach((btn) => {
     if (!input) return;
     const show = input.type === 'password';
     input.type = show ? 'text' : 'password';
-    btn.textContent = show ? '隐藏' : '显示';
+    btn.classList.toggle('showing', show);
   });
 });
 

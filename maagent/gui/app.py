@@ -1093,17 +1093,18 @@ class MaAgentWindow(QMainWindow):
                 changed = True
         return changed
 
-    def _on_account_changed(self, login: str, name: str = "", phone: str = "") -> None:
+    def _on_account_changed(
+        self, login: str, name: str = "", phone: str = "", email: str = ""
+    ) -> None:
         server_cfg = self.config.setdefault("server", {})
         login = (login or "").strip()
         name = (name or "").strip()
         server_cfg["account_login"] = login
         server_cfg["account_name"] = name or login
         server_cfg["account_phone"] = (phone or "").strip()
-        # A local account has no email; only email logins get report recipients.
-        server_cfg["account_email"] = login if "@" in login else ""
+        # Use the account's own email (only real email accounts have one).
+        server_cfg["account_email"] = (email or "").strip()
         if server_cfg["account_email"]:
-            # With a usable email, send the report (and log) in every case.
             email_cfg = self.config.setdefault("notify", {}).setdefault("email", {})
             email_cfg["send_log_on"] = ["success", "warning", "failed", "stopped"]
             email_cfg["enabled"] = True

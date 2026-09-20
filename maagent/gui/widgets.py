@@ -8,17 +8,19 @@ from PySide6.QtCore import (
     QObject,
     QPoint,
     QPropertyAnimation,
+    QRectF,
     QTime,
     Qt,
     Signal,
 )
-from PySide6.QtGui import QColor, QPainter
+from PySide6.QtGui import QColor, QIcon, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QFrame,
     QGridLayout,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QPushButton,
     QSizePolicy,
     QTimeEdit,
@@ -31,6 +33,47 @@ from maagent.core.scheduler import parse_hhmm
 from maagent.i18n import t
 
 WEEKDAY_LABELS = ["一", "二", "三", "四", "五", "六", "日"]
+
+
+def _eye_icon(visible: bool) -> QIcon:
+    """A small eye glyph; slashed when the password is hidden."""
+    pix = QPixmap(18, 18)
+    pix.fill(Qt.transparent)
+    painter = QPainter(pix)
+    painter.setRenderHint(QPainter.Antialiasing)
+    pen = QPen(QColor("#9ca3af"))
+    pen.setWidthF(1.4)
+    painter.setPen(pen)
+    painter.setBrush(Qt.NoBrush)
+    painter.drawEllipse(QRectF(2.0, 4.5, 14.0, 9.0))
+    painter.setBrush(QColor("#9ca3af"))
+    painter.drawEllipse(QRectF(7.0, 7.0, 4.0, 4.0))
+    if not visible:
+        painter.drawLine(3, 3, 15, 15)
+    painter.end()
+    return QIcon(pix)
+
+
+class PasswordEdit(QLineEdit):
+    """A password field with an in-field eye button to toggle plain text."""
+
+    def __init__(self, placeholder: str = "", parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setEchoMode(QLineEdit.Password)
+        if placeholder:
+            self.setPlaceholderText(placeholder)
+        self._eye = self.addAction(_eye_icon(False), QLineEdit.TrailingPosition)
+        self._eye.setCheckable(True)
+        self._eye.setToolTip(t("account.show_password"))
+        self._eye.toggled.connect(self._toggle)
+
+    def _toggle(self, visible: bool) -> None:
+        self.setEchoMode(QLineEdit.Normal if visible else QLineEdit.Password)
+        self._eye.setIcon(_eye_icon(visible))
+        self._eye.setToolTip(
+            t("account.hide_password") if visible else t("account.show_password")
+        )
+
 
 
 def set_button_role(button, role: str) -> None:

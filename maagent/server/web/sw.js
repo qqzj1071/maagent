@@ -1,4 +1,4 @@
-const CACHE = 'maagent-shell-v7';
+const CACHE = 'maagent-shell-v8';
 const ASSETS = ['/', '/index.html', '/styles.css', '/app.js', '/manifest.webmanifest', '/icon-192.png'];
 
 self.addEventListener('install', (event) => {

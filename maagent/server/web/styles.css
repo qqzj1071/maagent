@@ -92,6 +92,29 @@ input:focus { outline: none; border-color: var(--primary); background: #fff; }
 .row { display: flex; gap: 8px; margin-top: 6px; }
 .row input { margin-top: 0; }
 
+.pw-wrap { position: relative; display: block; }
+.pw-wrap input { padding-right: 40px; }
+.pw-eye {
+  position: absolute;
+  top: calc(50% + 3px);
+  right: 4px;
+  transform: translateY(-50%);
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #9ca3af;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  border-radius: 8px;
+}
+.pw-eye:active { background: rgba(0, 0, 0, .05); }
+.pw-eye .pw-slash { display: inline; }
+.pw-eye.showing .pw-slash { display: none; }
+
 button {
   font-size: 15px;
   border-radius: 9px;
