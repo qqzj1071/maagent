@@ -116,22 +116,38 @@ class AccountService:
 
     # -- account lifecycle ---------------------------------------------- #
     def register(
-        self, email: str, phone: str | None, password: str, code: str
+        self,
+        email: str,
+        phone: str | None,
+        password: str,
+        code: str,
+        username: str | None = None,
     ) -> dict[str, Any]:
         if self.store.get_account_by_email(email) is not None:
             raise AccountError("email_exists", "该邮箱已注册")
         if phone and self.store.get_account_by_phone(phone) is not None:
             raise AccountError("phone_exists", "该手机号已绑定其它账号")
+        username = (username or "").strip().lower()
+        if username:
+            if not USERNAME_RE.match(username):
+                raise AccountError("bad_username", "用户名需为 3-32 位字母、数字或 _ . -")
+            if self.store.get_account_by_username(username) is not None:
+                raise AccountError("username_exists", "该用户名已被使用")
         max_attempts = self._int("max_code_attempts", 5)
         if not self.store.consume_email_code(
             email, "register", code_digest(code), max_attempts
         ):
             raise AccountError("bad_code", "验证码错误或已过期")
         try:
-            return self.store.create_account(email, phone, hash_password(password))
+            return self.store.create_account(
+                email, phone, hash_password(password), username or None
+            )
         except DuplicateAccount as e:
-            if str(e) == "phone":
+            kind = str(e)
+            if kind == "phone":
                 raise AccountError("phone_exists", "该手机号已绑定其它账号") from e
+            if kind == "username":
+                raise AccountError("username_exists", "该用户名已被使用") from e
             raise AccountError("email_exists", "该邮箱已注册") from e
 
     def create_local(self, username: str, password: str) -> dict[str, Any]:

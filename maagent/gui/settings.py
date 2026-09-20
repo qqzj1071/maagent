@@ -266,6 +266,29 @@ class SettingsPage(QWidget):
         layout.addWidget(switch)
         return row
 
+    def _password_row(self, edit: QLineEdit) -> QWidget:
+        """A password field with a show/hide toggle button."""
+        row = QWidget()
+        layout = QHBoxLayout(row)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
+        layout.addWidget(edit, 1)
+        button = QPushButton(t("account.show_password"))
+        button.setObjectName("Ghost")
+        button.setCheckable(True)
+        button.setCursor(Qt.PointingHandCursor)
+        button.setFixedWidth(52)
+
+        def _toggle(shown: bool) -> None:
+            edit.setEchoMode(QLineEdit.Normal if shown else QLineEdit.Password)
+            button.setText(
+                t("account.hide_password") if shown else t("account.show_password")
+            )
+
+        button.toggled.connect(_toggle)
+        layout.addWidget(button)
+        return row
+
     # -- account -------------------------------------------------------- #
     def _account_service(self):
         if self._service is None:
@@ -433,7 +456,7 @@ class SettingsPage(QWidget):
         self.account_login_msg.setObjectName("SettingsPageDesc")
         self.account_login_msg.setWordWrap(True)
         login_layout.addWidget(self.account_email)
-        login_layout.addWidget(self.account_password)
+        login_layout.addWidget(self._password_row(self.account_password))
         login_layout.addWidget(self.account_login_btn)
         login_layout.addWidget(self.account_login_msg)
         self.account_login_card = self._section(
@@ -461,8 +484,8 @@ class SettingsPage(QWidget):
         self.account_local_msg.setObjectName("SettingsPageDesc")
         self.account_local_msg.setWordWrap(True)
         local_layout.addWidget(self.account_local_username)
-        local_layout.addWidget(self.account_local_password)
-        local_layout.addWidget(self.account_local_password2)
+        local_layout.addWidget(self._password_row(self.account_local_password))
+        local_layout.addWidget(self._password_row(self.account_local_password2))
         local_layout.addWidget(self.account_local_btn)
         local_layout.addWidget(self.account_local_msg)
         self.account_local_card = self._section(
@@ -476,6 +499,8 @@ class SettingsPage(QWidget):
         reg_layout.setSpacing(12)
         self.account_reg_email = QLineEdit()
         self.account_reg_email.setPlaceholderText(t("settings.account.email"))
+        self.account_reg_username = QLineEdit()
+        self.account_reg_username.setPlaceholderText(t("settings.account.username"))
         self.account_reg_phone = QLineEdit()
         self.account_reg_phone.setPlaceholderText(t("settings.account.phone"))
         self.account_reg_password = QLineEdit()
@@ -500,9 +525,10 @@ class SettingsPage(QWidget):
         self.account_reg_msg.setObjectName("SettingsPageDesc")
         self.account_reg_msg.setWordWrap(True)
         reg_layout.addWidget(self.account_reg_email)
+        reg_layout.addWidget(self.account_reg_username)
         reg_layout.addWidget(self.account_reg_phone)
-        reg_layout.addWidget(self.account_reg_password)
-        reg_layout.addWidget(self.account_reg_password2)
+        reg_layout.addWidget(self._password_row(self.account_reg_password))
+        reg_layout.addWidget(self._password_row(self.account_reg_password2))
         reg_layout.addLayout(code_row)
         reg_layout.addWidget(self.account_register_btn)
         reg_layout.addWidget(self.account_reg_msg)
@@ -797,11 +823,12 @@ class SettingsPage(QWidget):
         from maagent.server.accounts import AccountError
 
         email = self.account_reg_email.text().strip().lower()
+        username = self.account_reg_username.text().strip()
         phone = self.account_reg_phone.text().strip()
         password = self.account_reg_password.text()
         password2 = self.account_reg_password2.text()
         code = self.account_reg_code.text().strip()
-        if not email or not password or not code:
+        if not email or not username or not password or not code:
             self.account_reg_msg.setText(t("account.msg.need_fields"))
             return
         if len(password) < 8:
@@ -811,13 +838,17 @@ class SettingsPage(QWidget):
             self.account_reg_msg.setText(t("account.msg.password_mismatch"))
             return
         try:
-            account = self._account_service().register(email, phone or None, password, code)
+            account = self._account_service().register(
+                email, phone or None, password, code, username
+            )
         except AccountError as e:
             self.account_reg_msg.setText(self._account_error_text(e))
             return
         self.account_reg_msg.setText("")
         self.account_changed.emit(
-            email, str(account.get("username") or email), str(account.get("phone") or "")
+            email,
+            str(account.get("username") or username),
+            str(account.get("phone") or ""),
         )
         self._refresh_account()
 

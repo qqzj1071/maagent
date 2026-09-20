@@ -197,8 +197,9 @@ def register(ctx: ServerContext, req: Request) -> tuple[int, dict[str, Any]]:
     phone = normalize_phone(req.body.get("phone"))
     password = require_password(ctx, req.body.get("password"))
     code = require_code(req.body.get("code"))
+    username = str(req.body.get("username") or "").strip() or None
     try:
-        account = _account_service(ctx).register(email, phone, password, code)
+        account = _account_service(ctx).register(email, phone, password, code, username)
     except AccountError as e:
         _raise_account(e)
     token, expires_at = issue_token(ctx, int(account["id"]))

@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, QThread, Signal
+from PySide6.QtCore import Qt, QThread, QTimer, Signal
 from PySide6.QtWidgets import (
     QDialog,
     QHBoxLayout,
     QLabel,
     QPlainTextEdit,
+    QProgressBar,
     QPushButton,
     QVBoxLayout,
 )
@@ -53,12 +54,23 @@ class PhoneRemoteDialog(QDialog):
 
         self.log_view = QPlainTextEdit()
         self.log_view.setReadOnly(True)
-        self.log_view.setMinimumHeight(200)
+        self.log_view.setMinimumHeight(180)
         layout.addWidget(self.log_view)
+
+        self.progress = QProgressBar()
+        self.progress.setRange(0, 100)
+        self.progress.setValue(0)
+        self.progress.setTextVisible(False)
+        self.progress.setFixedHeight(10)
+        layout.addWidget(self.progress)
 
         self.status = QLabel("")
         self.status.setWordWrap(True)
         layout.addWidget(self.status)
+
+        self._progress_timer = QTimer(self)
+        self._progress_timer.setInterval(400)
+        self._progress_timer.timeout.connect(self._tick_progress)
 
         buttons = QHBoxLayout()
         buttons.addStretch(1)
@@ -73,23 +85,49 @@ class PhoneRemoteDialog(QDialog):
         buttons.addWidget(self.start_btn)
         layout.addLayout(buttons)
 
+    # Cosmetic step weights so the bar advances at each stage.
+    _PROGRESS_HINTS = (
+        ("检测 Tailscale", 5),
+        ("下载", 18),
+        ("安装", 38),
+        ("登录", 62),
+        ("Funnel", 82),
+        ("手机网页地址", 100),
+    )
+
+    def _tick_progress(self) -> None:
+        if self.progress.value() < 95:
+            self.progress.setValue(self.progress.value() + 1)
+
+    def _bump_progress(self, text: str) -> None:
+        for hint, value in self._PROGRESS_HINTS:
+            if hint in text and self.progress.value() < value:
+                self.progress.setValue(value)
+                break
+
     def _append(self, text: str) -> None:
         self.log_view.appendPlainText(text)
         logger.info("手机远程: {}", text)
+        self._bump_progress(text)
 
     def start_setup(self) -> None:
         self.start_btn.setEnabled(False)
         self.close_btn.setEnabled(False)
+        self.progress.setValue(0)
         self.status.setText(t("phone.dialog.running"))
+        self._progress_timer.start()
         self._worker = PhoneRemoteWorker(self.port, self)
         self._worker.progress.connect(self._append)
         self._worker.completed.connect(self._on_done)
         self._worker.start()
 
     def _on_done(self, ok: bool, message: str) -> None:
+        self._progress_timer.stop()
         self._append(message)
         self.ok = ok
         self.url = message if ok else ""
+        if ok:
+            self.progress.setValue(100)
         self.status.setText(t("phone.dialog.ok") if ok else t("phone.dialog.fail"))
         self.start_btn.setEnabled(not ok)
         self.close_btn.setEnabled(True)

@@ -21,7 +21,7 @@ workflow:
   min_runtime_seconds: 90
   poll_interval: 10
   clean_start: true
-  auto_close: false            # 任务完成并发送报告后，自动关闭 MAA 与模拟器
+  auto_close: true             # 任务完成并发送报告后，自动关闭 MAA 与模拟器
   chain:                       # 日常工作流（编排顺序 + 定时执行）
     enabled: false             # 定时总开关
     mode: sequential           # sequential=整链定时 | scheduled=逐条定时
@@ -46,23 +46,23 @@ workflow:
       - id: maaend-1
         software: maaend
         enabled: true
-        time: "10:00"
+        time: "08:00"
         days: [0, 1, 2, 3, 4, 5, 6]
 
 weekly:
   enabled: true                # 周常总开关
   potion:                      # 体力药刷取
     enabled: true              # 条目启用；未启用则始终关闭「使用药剂」
-    days: []                   # 使用体力药的日子，周一=0 ... 周日=6
+    days: [0]                  # 使用体力药的日子，周一=0 ... 周日=6
   annihilation:                # 剿灭刷取
-    enabled: false             # 条目启用；未启用则始终取消勾选「剿灭刷取」
-    day: null                  # 刷取日（仅一天），周一=0 ... 周日=6
+    enabled: true              # 条目启用；未启用则始终取消勾选「剿灭刷取」
+    day: 0                     # 刷取日（仅一天），周一=0 ... 周日=6
     cap: 1800                  # 剿灭模式每周上限，达到即视为完成
 
 monthly:
   enabled: true                # 月常总开关
   green:                       # 绿票商店
-    enabled: false             # 启用后每月自动购买一次
+    enabled: true              # 启用后每月自动购买一次
   yellow:                      # 黄票商店
     enabled: false             # 启用后每月自动购买一次
   state_file: logs/monthly_state.json
@@ -86,11 +86,11 @@ adapters:
     path: "D:/MaaEnd-win-x86_64-v2.7.0"
     executable: "D:/MaaEnd-win-x86_64-v2.7.0/MaaEnd.exe"
     wait_seconds: 30            # 启动后等待主窗口的时间
-    auto_close: false            # 任务完成并发送报告后自动关闭 MaaEnd 与终末地
+    auto_close: true            # 任务完成并发送报告后自动关闭 MaaEnd 与终末地
     log_dir: "D:/MaaEnd-win-x86_64-v2.7.0/debug"   # 会话日志所在目录
     web_port: 12701
     game_process: "Endfield.exe"
-    game_start_timeout: 240     # 等待终末地进程启动
+    game_start_timeout: 300     # 等待终末地进程启动并进入运行状态
     task_timeout_seconds: 3600  # 等待任务结束（进程退出）的上限
 
 notify:
@@ -101,7 +101,7 @@ notify:
     username: "your@qq.com"
     password: ""
     to: ["your@qq.com"]
-    send_log_on: []              # 附带当天任务日志的场景（可多选）：success=任务完成 / warning=完成但有子任务报错 / failed=任务失败 / stopped=任务急停
+    send_log_on: [success, warning, failed, stopped]  # 附带当天任务日志的场景（可多选）：success=任务完成 / warning=完成但有子任务报错 / failed=任务失败 / stopped=任务急停
   wechat:
     enabled: false
     webhook_url: ""

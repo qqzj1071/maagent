@@ -104,20 +104,25 @@ class AccountStore:
     def _account(row: sqlite3.Row | None) -> dict[str, Any] | None:
         return dict(row) if row is not None else None
 
-    def create_account(self, email: str, phone: str | None, password_hash: str) -> dict[str, Any]:
+    def create_account(
+        self, email: str, phone: str | None, password_hash: str, username: str | None = None
+    ) -> dict[str, Any]:
         now = iso(utcnow())
+        username = (username or "").strip().lower() or None
         with self._lock:
             try:
                 cur = self._conn.execute(
-                    "INSERT INTO accounts (email, phone, password_hash, email_verified,"
-                    " created_at, updated_at) VALUES (?, ?, ?, 1, ?, ?)",
-                    (email, phone, password_hash, now, now),
+                    "INSERT INTO accounts (email, username, phone, password_hash,"
+                    " email_verified, created_at, updated_at) VALUES (?, ?, ?, ?, 1, ?, ?)",
+                    (email, username, phone, password_hash, now, now),
                 )
                 self._conn.commit()
             except sqlite3.IntegrityError as e:
                 message = str(e).lower()
                 if "phone" in message:
                     raise DuplicateAccount("phone") from e
+                if "username" in message:
+                    raise DuplicateAccount("username") from e
                 raise DuplicateAccount("email") from e
         account = self.get_account_by_id(cur.lastrowid)
         assert account is not None

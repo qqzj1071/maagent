@@ -106,6 +106,16 @@ document.querySelectorAll('[data-auth]').forEach((btn) => {
   });
 });
 
+document.querySelectorAll('.toggle-pw').forEach((btn) => {
+  btn.addEventListener('click', () => {
+    const input = $(btn.dataset.target);
+    if (!input) return;
+    const show = input.type === 'password';
+    input.type = show ? 'text' : 'password';
+    btn.textContent = show ? '隐藏' : '显示';
+  });
+});
+
 $('loginForm').addEventListener('submit', async (event) => {
   event.preventDefault();
   const msg = $('loginMsg');
@@ -135,6 +145,7 @@ $('registerForm').addEventListener('submit', async (event) => {
       auth: false,
       body: {
         email: $('regEmail').value.trim(),
+        username: $('regUsername').value.trim(),
         phone: $('regPhone').value.trim() || null,
         password: $('regPassword').value,
         code: $('regCode').value.trim(),

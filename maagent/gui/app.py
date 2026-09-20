@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import threading
 from datetime import datetime
 from pathlib import Path
 
@@ -102,6 +103,8 @@ QTimeEdit { background: #ffffff; border: 1px solid #d0d7de; border-radius: 6px; 
 QTimeEdit:hover { border-color: #a5b4fc; }
 
 QPlainTextEdit { background: #fbfbfd; border: 1px solid #e5e7eb; border-radius: 8px; padding: 6px; color: #1f2328; }
+QProgressBar { border: none; border-radius: 5px; background: #e5e7eb; }
+QProgressBar::chunk { border-radius: 5px; background: #4f46e5; }
 QLineEdit { background: #f6f7fb; border: 1px solid #e5e7eb; border-radius: 10px; padding: 9px 12px; color: #1f2328; selection-background-color: #c7d2fe; }
 QLineEdit:hover { border-color: #c7d2fe; }
 QLineEdit:focus { border-color: #4f46e5; background: #ffffff; }
@@ -192,6 +195,8 @@ QTimeEdit { background: #2a2a33; border: 1px solid #45454f; border-radius: 6px; 
 QTimeEdit:hover { border-color: #6366f1; }
 
 QPlainTextEdit { background: #1b1b21; border: 1px solid #3a3a45; border-radius: 8px; padding: 6px; color: #e5e7eb; }
+QProgressBar { border: none; border-radius: 5px; background: #2a2a33; }
+QProgressBar::chunk { border-radius: 5px; background: #6366f1; }
 QLineEdit { background: #1b1b21; border: 1px solid #3a3a45; border-radius: 10px; padding: 9px 12px; color: #e5e7eb; selection-background-color: #4338ca; }
 QLineEdit:hover { border-color: #6366f1; }
 QLineEdit:focus { border-color: #6366f1; background: #23232b; }
@@ -344,6 +349,7 @@ class MaAgentWindow(QMainWindow):
         self.bridge.message.connect(self.append_log)
         self.schedule_timer.start()
         self._start_embedded_server()
+        self._ensure_phone_remote_ready()
 
     def _software_defs(self) -> list[tuple[str, str, str, bool]]:
         adapters = self.config.get("adapters", {}) or {}
@@ -649,9 +655,6 @@ class MaAgentWindow(QMainWindow):
             return
         self.config.setdefault("server", {})["public_url"] = url
         self.save_settings()
-        email = str((self.config.get("server", {}) or {}).get("account_email") or "").strip()
-        if email:
-            self._send_public_url_email(email)
 
     def _maybe_offer_phone_setup(self) -> None:
         server_cfg = self.config.setdefault("server", {})
@@ -1034,6 +1037,28 @@ class MaAgentWindow(QMainWindow):
             server_cfg.get("account_login") or server_cfg.get("account_email") or ""
         ).strip()
 
+    def _ensure_phone_remote_ready(self) -> None:
+        """Make sure the Tailscale client is running so the Funnel backend is up.
+
+        Without the GUI client the Windows backend can stay in ``NoState`` and the
+        persisted Funnel stays inactive, which looks like "server unavailable" on
+        the phone until something starts Tailscale.
+        """
+        server_cfg = self.config.get("server", {}) or {}
+        if not server_cfg.get("enabled") or not self._account_login():
+            return
+
+        def work() -> None:
+            try:
+                from maagent.control import tailscale as ts
+
+                if ts.is_installed():
+                    ts.ensure_ipn(lambda s: logger.info("手机远程: {}", s))
+            except Exception as e:
+                logger.warning("启动 Tailscale 客户端失败: {}", e)
+
+        threading.Thread(target=work, name="phone-remote-ready", daemon=True).start()
+
     def _sync_account_name(self) -> bool:
         """Backfill display name / phone for sessions logged in before these fields."""
         server_cfg = self.config.get("server", {}) or {}
@@ -1077,6 +1102,11 @@ class MaAgentWindow(QMainWindow):
         server_cfg["account_phone"] = (phone or "").strip()
         # A local account has no email; only email logins get report recipients.
         server_cfg["account_email"] = login if "@" in login else ""
+        if server_cfg["account_email"]:
+            # With a usable email, send the report (and log) in every case.
+            email_cfg = self.config.setdefault("notify", {}).setdefault("email", {})
+            email_cfg["send_log_on"] = ["success", "warning", "failed", "stopped"]
+            email_cfg["enabled"] = True
         self.save_settings()
         self._update_account_chip()
         if not login:
@@ -1085,14 +1115,6 @@ class MaAgentWindow(QMainWindow):
             return
         logger.info("账号已登录: {}", login)
         self._start_embedded_server()
-        email = str(server_cfg.get("account_email") or "").strip()
-        if not email:
-            return
-        last_notified = str(server_cfg.get("last_notified_email") or "").strip()
-        if email != last_notified:
-            self._send_public_url_email(email)
-            server_cfg["last_notified_email"] = email
-            self.save_settings()
 
     def _on_send_public_url(self) -> None:
         email = str((self.config.get("server", {}) or {}).get("account_email") or "").strip()
