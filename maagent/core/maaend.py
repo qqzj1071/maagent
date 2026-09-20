@@ -110,7 +110,9 @@ class MaaEndOrchestrator(BaseWorkflow):
     def _run(self, report: RunReport) -> None:
         cfg = self.cfg
         logger.info("=== 终末地 步骤 1/5: 打开 MaaEnd ===")
-        if not process_running(PROCESS_NAME):
+        launched = not process_running(PROCESS_NAME)
+        launch_time = time.time()
+        if launched:
             logger.info("MaaEnd 未运行，正在启动...")
             if self._launch() is None:
                 report.status = "failed"
@@ -129,7 +131,7 @@ class MaaEndOrchestrator(BaseWorkflow):
         logger.info("MaaEnd 实例: {}", instance_id)
         self._ensure_global_hotkeys(api)
         log_dir = cfg.get("log_dir")
-        if not self._wait_hotkeys(log_dir, 30):
+        if launched and not self._wait_hotkeys(log_dir, 40, since=launch_time):
             logger.warning("终末地：未等到 MaaEnd 全局热键注册，稍后仍会尝试")
         self._check_stop()
 
@@ -144,7 +146,7 @@ class MaaEndOrchestrator(BaseWorkflow):
         logger.info("=== 终末地 步骤 3/5: 等待任务完成 ===")
         result = self._wait_done(
             api, instance_id, since,
-            float(cfg.get("game_start_timeout", 240)),
+            float(cfg.get("game_start_timeout", 300)),
             float(cfg.get("task_timeout_seconds", 3600)),
         )
 
@@ -192,7 +194,8 @@ class MaaEndOrchestrator(BaseWorkflow):
         return False
 
     @staticmethod
-    def _newest_app_log(log_dir: str | None) -> Path | None:
+    def _newest_app_log(log_dir: str | None, since: float = 0.0) -> Path | None:
+        """Newest MaaEnd app log written at/after ``since`` (skips stale logs)."""
         if not log_dir:
             return None
         root = Path(log_dir)
@@ -201,15 +204,21 @@ class MaaEndOrchestrator(BaseWorkflow):
         files = [
             p for p in root.glob("*.log")
             if re.match(r"\d{4}-\d{2}-\d{2}-\d+\.log$", p.name)
+            and p.stat().st_mtime >= since
         ]
         return max(files, key=lambda p: p.stat().st_mtime) if files else None
 
-    def _wait_hotkeys(self, log_dir: str | None, timeout: float) -> bool:
-        """MaaEnd registers its global hotkeys a few seconds after launch."""
+    def _wait_hotkeys(self, log_dir: str | None, timeout: float, since: float = 0.0) -> bool:
+        """Wait until the *current* MaaEnd run has registered its global hotkeys.
+
+        ``since`` (the launch time) avoids matching a stale log from a previous
+        run — otherwise the start hotkey is sent before MaaEnd is ready and the
+        task never starts.
+        """
         deadline = time.time() + timeout
         while time.time() < deadline:
             self._check_stop()
-            path = self._newest_app_log(log_dir)
+            path = self._newest_app_log(log_dir, since)
             if path:
                 try:
                     if "全局快捷键已注册" in path.read_text(encoding="utf-8", errors="replace"):
@@ -249,6 +258,17 @@ class MaaEndOrchestrator(BaseWorkflow):
             return True
         return False
 
+    def _nudge_start(self) -> None:
+        """Re-send the start hotkey / click the button when the task hasn't started."""
+        try:
+            press_hotkey(START_HOTKEY)
+        except Exception as e:
+            logger.warning("终末地：重发开始热键失败: {}", e)
+        try:
+            MaaEndUI().press_start()
+        except Exception:
+            pass
+
     @staticmethod
     def _new_messages(api: MaaEndApi, instance_id: str, since: str) -> list[str]:
         try:
@@ -283,6 +303,7 @@ class MaaEndOrchestrator(BaseWorkflow):
         task actually runs, which can take a minute or two."""
         start_deadline = time.time() + start_timeout
         running = False
+        next_retry = time.time() + 40
         while time.time() < start_deadline:
             self._check_stop()
             if any("结束进程" in m and "完成" in m for m in self._new_messages(api, instance_id, since)):
@@ -294,6 +315,10 @@ class MaaEndOrchestrator(BaseWorkflow):
                     break
             except Exception:
                 pass
+            if time.time() >= next_retry:
+                logger.info("终末地：任务尚未进入运行状态，重试触发开始")
+                self._nudge_start()
+                next_retry = time.time() + 40
             time.sleep(3.0)
         if not running:
             logger.warning("终末地：等待任务进入运行状态超时")
