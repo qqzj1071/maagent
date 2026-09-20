@@ -361,15 +361,9 @@ class GameService:
         y = PROFESSION_Y.get(profession)
         if y is None:
             return False
-        for _ in range(2):
-            self.click(PROFESSION_FILTER_X, y)
-            time.sleep(1.5)
-            if self._is_operator_list(self._texts()):
-                return True
-            # 误触卡片进了详情页 → 返回列表再试
-            self.click(75, 55)
-            time.sleep(1.8)
-        return False
+        self.click(PROFESSION_FILTER_X, y)
+        time.sleep(2.5)  # 筛选有加载动画，等久一点再判断
+        return self._is_operator_list(self._texts())
 
     def open_operator(self, name: str, scrolls: int = 6) -> str:
         name = (name or "").strip()
