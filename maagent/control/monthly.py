@@ -7,6 +7,7 @@ from typing import Any, Callable
 import win32gui
 from loguru import logger
 
+from maagent.control.game_time import game_datetime
 from maagent.control.logmonitor import MaaLogMonitor
 from maagent.control.popup import (
     _click_screen,
@@ -193,10 +194,10 @@ class MaaToolNavigator:
 
 
 # --------------------------------------------------------------------------- #
-# monthly state (per calendar month)
+# monthly state (per game month, switching at 04:00 on the 1st)
 # --------------------------------------------------------------------------- #
 def current_month_key(now: datetime | None = None) -> str:
-    now = now or datetime.now()
+    now = game_datetime(now)
     return f"{now.year}-{now.month:02d}"
 
 

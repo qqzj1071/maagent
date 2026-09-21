@@ -188,6 +188,15 @@ def build_game_tools(service: Any) -> ToolRegistry:
     def get_operator_training(name: str) -> str:
         return service.get_operator_training(name)
 
+    def get_warehouse_inventory() -> str:
+        return service.get_warehouse_inventory()
+
+    def build_item_catalog() -> str:
+        return service.build_item_catalog()
+
+    def get_item_quantity(name: str) -> str:
+        return service.get_item_quantity(name)
+
     def focus_emulator() -> str:
         return "已将模拟器窗口置于屏幕前台。" if service.focus_emulator() else "未找到模拟器窗口。"
 
@@ -229,7 +238,8 @@ def build_game_tools(service: Any) -> ToolRegistry:
         name="open_arknights",
         description=(
             "打开《明日方舟》并进入主界面：自动启动模拟器、启动游戏、点击 START/开始唤醒 进入主界面。"
-            "博士说『B服』时传 version='B服'，说『官服』时传 version='官服'；未指定则默认官服。"
+            "默认按『B服』处理：未说明版本、或说『B服』时传 version='B服'；"
+            "只有博士明确说『官服』时才传 version='官服'。"
             "如果只想启动到开始界面、不自动进入，传 enter=false。"
         ),
         parameters={
@@ -271,6 +281,37 @@ def build_game_tools(service: Any) -> ToolRegistry:
             "required": ["name"],
         },
         func=get_operator_training,
+    ))
+    registry.register(Tool(
+        name="get_warehouse_inventory",
+        description=(
+            "清点仓库里的养成材料与物品：自动进入仓库，逐个读取每种物品的名称和数量并汇总"
+            "（如博士问『仓库里有什么』『我还有多少龙门币/源石』『统计一下我的材料』）。"
+        ),
+        parameters={"type": "object", "properties": {}},
+        func=get_warehouse_inventory,
+    ))
+    registry.register(Tool(
+        name="build_item_catalog",
+        description=(
+            "清点仓库并记住每种物品的图标与名称对应关系（建立图标目录），供之后快速按名称查询数量。"
+            "当博士说『记住仓库里的物品』『认一下我的材料图标』时使用。"
+        ),
+        parameters={"type": "object", "properties": {}},
+        func=build_item_catalog,
+    ))
+    registry.register(Tool(
+        name="get_item_quantity",
+        description=(
+            "按名称查询仓库中某种物品的数量（如『我还有多少龙门币』『固源岩有多少』）。"
+            "会直接定位对应图标读取数量，无需逐个清点。"
+        ),
+        parameters={
+            "type": "object",
+            "properties": {"name": {"type": "string", "description": "物品名称"}},
+            "required": ["name"],
+        },
+        func=get_item_quantity,
     ))
     registry.register(Tool(
         name="focus_emulator",

@@ -43,6 +43,10 @@ PROFESSION_Y = {
 }
 ALL_FILTER_Y = 136
 
+# 仓库物品网格：列/行中心坐标（实测），数量在格子右下角
+WAREHOUSE_COLS = (185, 430, 675, 920, 1160, 1400, 1645, 1890)
+WAREHOUSE_ROWS = (260, 543, 827)
+
 
 def _is_start_button(text: str) -> bool:
     t = text.strip()
@@ -50,7 +54,13 @@ def _is_start_button(text: str) -> bool:
 
 
 class GameService:
-    def __init__(self, config: dict[str, Any], llm: Any = None, knowledge: Any = None) -> None:
+    def __init__(
+        self,
+        config: dict[str, Any],
+        llm: Any = None,
+        knowledge: Any = None,
+        catalog_file: str | None = None,
+    ) -> None:
         maa = (config.get("adapters") or {}).get("maa") or {}
         emu = maa.get("emulator") or {}
         game = (config.get("agent") or {}).get("game") or {}
@@ -65,6 +75,7 @@ class GameService:
         self.max_screenshots = int(game.get("max_screenshots", 50))
         self.llm = llm
         self.knowledge = knowledge
+        self.catalog_file = Path(catalog_file or "config/agent_item_catalog.json")
         self.address: str | None = None
         self._game = None
 
@@ -199,7 +210,7 @@ class GameService:
             return PACKAGE_BILIBILI, "B服"
         if "官" in v or "official" in v:
             return PACKAGE_OFFICIAL, "官服"
-        return self.package, "明日方舟"
+        return PACKAGE_BILIBILI, "B服"  # 未明确说明时默认 B 服
 
     def _start_app_pkg(self, package: str) -> None:
         self._adb(
@@ -466,7 +477,7 @@ class GameService:
         return any("模组" in t for t in texts) or any("STAGE" in t for t in texts)
 
     @staticmethod
-    def _count_dots(badge, thr: int = 190, min_size: int = 4) -> int:
+    def _count_dots(badge, thr: int = 190, min_size: int = 40) -> int:
         import numpy as np
 
         gray = np.array(badge.convert("L"))
@@ -505,7 +516,63 @@ class GameService:
             mastery.append(self._count_dots(badge, thr=170))
         return mastery
 
+    def _elite_level(self, image) -> int:
+        """精英化等级：数图标里实心白条的道数（精0/1/2），用白色像素面积区分。"""
+        import numpy as np
+
+        area = int((np.array(image.crop((1370, 375, 1470, 465)).convert("L")) > 200).sum())
+        if area >= 1900:
+            return 2
+        if area >= 900:
+            return 1
+        return 0
+
+    def _read_modules(self) -> list[dict[str, Any]]:
+        """读取模组详情界面里的全部模组：类型（名字末尾字母）+ 状态（MAX/解锁）。"""
+        items = self.ocr()
+        badges: list[tuple[Any, str]] = []
+        seen_y: list[int] = []
+        for it in items:
+            tu = it.text.strip().upper().replace(" ", "")
+            if tu == "ORIGINAL":
+                badges.append((it, "ORIGINAL"))
+            elif re.fullmatch(r"[A-Z]{3,6}[XYΔΑ△Α]", tu):
+                if any(abs(it.center[1] - y) < 60 for y in seen_y):
+                    continue
+                seen_y.append(it.center[1])
+                badges.append((it, tu[-1]))
+        modules: list[dict[str, Any]] = []
+        for badge, mtype in badges:
+            status = None
+            for it in items:
+                if abs(it.center[0] - badge.center[0]) < 100 and 30 < it.center[1] - badge.center[1] < 120:
+                    text = it.text.strip()
+                    if text in ("MAX", "解锁"):
+                        status = text
+                        break
+            modules.append({
+                "type": mtype, "status": status,
+                "x": badge.center[0], "y": badge.center[1],
+            })
+        return modules
+
+    def _read_module_level(self, badge_x: int, badge_y: int) -> int | None:
+        """点击徽章下方的升级箭头，从弹窗「确认将…升至N级?」推算当前等级 N-1，然后取消。"""
+        self.click(badge_x, badge_y + 68)
+        time.sleep(2.5)
+        joined = " ".join(self._texts())
+        m = re.search(r"升至\s*(\d+)\s*级", joined)
+        self.click(1385, 945)  # 取消，不消耗材料
+        time.sleep(1.5)
+        return int(m.group(1)) - 1 if m else None
+
     def _read_potential(self) -> str:
+        # 满潜时潜能右侧显示 MAX，无需点进去
+        if any(
+            "MAX" in i.text.strip().upper() and i.center[0] > 1750 and 380 < i.center[1] < 480
+            for i in self.ocr()
+        ):
+            return "满潜"
         self.click(1816, 400)
         time.sleep(2.5)
         items = self.ocr()
@@ -525,40 +592,417 @@ class GameService:
 
         image = self.screenshot()
         items = self.ocr()
-        level = next(
-            (i.text.strip() for i in items
-             if re.fullmatch(r"\d{1,3}", i.text.strip()) and 1300 < i.center[0] < 1500 and 180 < i.center[1] < 260),
-            "?",
+        level_cands = [
+            i for i in items
+            if re.fullmatch(r"\d{1,3}", i.text.strip()) and 1250 < i.center[0] < 1620 and 170 < i.center[1] < 300
+        ]
+        level = (
+            min(level_cands, key=lambda i: abs(i.center[0] - 1396) + abs(i.center[1] - 214)).text.strip()
+            if level_cands else "?"
         )
         trust = next(
             (i.text.strip() for i in items
              if "%" in i.text and 400 < i.center[0] < 720 and 580 < i.center[1] < 660),
             "?",
         )
-        elite = next(
-            (i.text.strip() for i in items
-             if 1480 < i.center[0] < 1650 and 405 < i.center[1] < 465),
-            "?",
-        )
+        elite = f"精{self._elite_level(image)}"
         mastery = self._skill_mastery(image)
         potential = self._read_potential()
 
-        module = ""
+        modules: list[dict[str, Any]] = []
         if self._open_module_view():
-            module = self.analyze_screen(self.MODULE_PROMPT)
+            hit = next((i for i in self.ocr() if "模组详情" in i.text), None)
+            if hit is not None:
+                self.click(*hit.center)
+                time.sleep(2.5)
+                modules = self._read_modules()
+                for m in modules:  # 未满级的模组：点进去读具体等级
+                    if m["status"] is None and m["type"] != "ORIGINAL":
+                        module_level = self._read_module_level(m["x"], m["y"])
+                        if module_level is not None:
+                            m["level"] = module_level
+                self.click(75, 55)
+                time.sleep(1.2)
             self.click(75, 55)
-            time.sleep(1.5)
+            time.sleep(1.2)
+
+        def _module_line(m: dict[str, Any]) -> str:
+            if m["type"] == "ORIGINAL":
+                return "- ORIGINAL：默认模组（无等级）"
+            if m["status"] == "MAX":
+                return f"- {m['type']}：已解锁，3级（满级）"
+            if m["status"] == "解锁":
+                return f"- {m['type']}：未解锁"
+            if m.get("level") is not None:
+                return f"- {m['type']}：已解锁，{m['level']}级"
+            return f"- {m['type']}：已解锁，等级未满（未能读取）"
+
+        module_text = "\n".join(_module_line(m) for m in modules) if modules else \
+            "未找到模组界面（该干员可能无模组）"
+
+        potential_text = potential if potential == "满潜" else f"{potential}（未满，满潜为6）"
 
         skills = "、".join(f"技能{i+1}=专精{m}" for i, m in enumerate(mastery)) or "看不清"
         return (
             f"【{name} 练度】\n"
             f"- 等级：{level}\n"
             f"- 精英化：{elite}\n"
-            f"- 潜能：{potential}\n"
+            f"- 潜能：{potential_text}\n"
             f"- 信赖值：{trust}\n"
             f"- 技能专精：{skills}\n\n"
-            f"【模组】\n{module or '未找到模组界面（该干员可能无模组）'}"
+            f"【模组】\n{module_text}"
         )
+
+    def _is_warehouse(self, texts: list[str]) -> bool:
+        return ("全部" in texts or "消耗物品" in texts or "养成材料" in texts) and "保险库" in texts
+
+    def _open_warehouse(self) -> bool:
+        for _ in range(6):
+            items = self.ocr()
+            texts = [i.text.strip() for i in items]
+            if self._is_warehouse(texts):
+                return True
+            if self._confirm_dialog():
+                continue
+            if self._is_main_ui(texts):
+                cand = next(
+                    (i for i in items
+                     if i.text.strip() == "仓库" and i.center[0] > 1600 and i.center[1] > 800),
+                    None,
+                )
+                if cand is not None:
+                    self.click(*cand.center)
+                    time.sleep(3.0)
+                    continue
+            self.click(75, 55)
+            time.sleep(1.8)
+        return self._is_warehouse(self._texts())
+
+    def _read_item_panel(self) -> tuple[str | None, str | None]:
+        items = self.ocr()
+        names = [
+            i for i in items
+            if 250 < i.center[0] < 1150 and 185 < i.center[1] < 320
+            and i.text.strip() and "库存" not in i.text
+        ]
+        name = min(names, key=lambda i: i.center[0]).text.strip() if names else None
+        qty = next(
+            (i.text.strip() for i in items
+             if 1430 < i.center[0] < 1670 and 200 < i.center[1] < 300 and i.text.strip()),
+            None,
+        )
+        return name, qty
+
+    def _screen_sig(self):
+        import numpy as np
+
+        img = self.screenshot().convert("L").resize((64, 36))
+        return np.asarray(img, dtype=np.int16)
+
+    def get_warehouse_inventory(self, max_items: int = 600) -> str:
+        import numpy as np
+
+        if not self._is_warehouse(self._texts()) and not self._open_warehouse():
+            return "未能打开仓库界面。"
+        self.click(185, 260)  # 第一个物品
+        time.sleep(1.6)
+        records: list[tuple[str, str]] = []
+        misses = 0
+        for _ in range(max_items):
+            name, qty = self._read_item_panel()
+            if name is None:
+                misses += 1
+                if misses >= 3:
+                    break
+            else:
+                misses = 0
+                records.append((name, qty or "?"))
+            before = self._screen_sig()
+            self.click(1888, 512)  # 右侧「>」下一个
+            changed = False
+            for _ in range(10):
+                time.sleep(0.5)
+                if float(np.abs(self._screen_sig() - before).mean()) >= 0.5:
+                    changed = True
+                    break
+            if not changed:
+                break  # 画面不再变化，说明已到末尾
+        self.press_key(4)
+        time.sleep(1.2)
+        if not records:
+            return "仓库里没有读到物品。"
+        lines = [f"- {n}：{q}" for n, q in records]
+        return f"【仓库物品（共 {len(records)} 种）】\n" + "\n".join(lines)
+
+    # ---------- 仓库物品目录（图标 ↔ 名称） ----------
+    def _load_catalog(self) -> dict[str, Any]:
+        try:
+            return json.loads(self.catalog_file.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+
+    def _save_catalog(self, catalog: dict[str, Any]) -> None:
+        self.catalog_file.parent.mkdir(parents=True, exist_ok=True)
+        self.catalog_file.write_text(
+            json.dumps(catalog, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+
+    @staticmethod
+    def _icon_hash(image, cx: int, cy: int) -> str:
+        import numpy as np
+
+        crop = image.crop((cx - 58, cy - 58, cx + 58, cy + 58)).convert("L").resize((9, 8))
+        arr = np.asarray(crop, dtype=np.int16)
+        return "".join("1" if v else "0" for v in (arr[:, 1:] > arr[:, :-1]).flatten())
+
+    @staticmethod
+    def _grid_cols(image) -> list[int]:
+        """用列亮度信号的相位检测物品列中心（借鉴 MAA DepotImageAnalyzer）。"""
+        import numpy as np
+
+        small = image.convert("L").resize((image.width // 2, image.height // 2))
+        hist = np.asarray(small, dtype=np.float32).mean(axis=0)
+        spacing = (WAREHOUSE_COLS[1] - WAREHOUSE_COLS[0]) / 2  # 半分辨率下的列间距
+        x = np.arange(len(hist), dtype=np.float32)
+        s = float((hist * np.sin(2 * np.pi * x / spacing)).sum())
+        c = float((hist * np.cos(2 * np.pi * x / spacing)).sum())
+        phase = float(np.arctan2(s, c))
+        first = phase / (2 * np.pi) * spacing + spacing / 2
+        if phase < 0:
+            first += spacing
+        cols: list[int] = []
+        xx = first * 2
+        while xx < image.width:
+            cols.append(int(round(xx)))
+            xx += spacing * 2
+        return cols
+
+    @staticmethod
+    def _cell_has_item(image, cx: int, cy: int) -> bool:
+        import numpy as np
+
+        crop = image.crop((cx - 58, cy - 58, cx + 58, cy + 58)).convert("L")
+        return float(np.asarray(crop, dtype=np.int16).std()) > 14.0
+
+    @staticmethod
+    def _hamming(a: str, b: str) -> int:
+        return sum(1 for x, y in zip(a, b) if x != y)
+
+    @staticmethod
+    def _cell_quantity(image, cx: int, cy: int) -> str | None:
+        import cv2
+        import numpy as np
+        from PIL import Image as _Image
+
+        from maagent.control.popup import recognize
+
+        box = (
+            max(0, cx - 45),
+            max(0, cy + 50),
+            min(image.width, cx + 95),
+            min(image.height, cy + 112),
+        )
+        arr = np.asarray(image.crop(box).convert("L"))
+        up = cv2.resize(arr, (arr.shape[1] * 4, arr.shape[0] * 4), interpolation=cv2.INTER_CUBIC)
+        texts = [i.text.strip() for i in recognize(_Image.fromarray(up)) if re.search(r"\d", i.text)]
+        if not texts:
+            return None
+        return "".join(texts)
+
+    def _warehouse_next_page(self) -> bool:
+        import numpy as np
+
+        before = self._screen_sig()
+        self.swipe(1700, 500, 200, 500, 500)
+        time.sleep(1.5)
+        for _ in range(12):
+            s1 = self._screen_sig()
+            time.sleep(0.6)
+            s2 = self._screen_sig()
+            if float(np.abs(s1 - s2).mean()) < 0.3:  # 画面已稳定
+                return float(np.abs(s2 - before).mean()) >= 0.5
+        return False
+
+    def _warehouse_first_page(self) -> None:
+        import numpy as np
+
+        stable = 0
+        for _ in range(30):
+            before = self._screen_sig()
+            self.swipe(200, 500, 1700, 500, 500)
+            time.sleep(1.2)
+            if float(np.abs(self._screen_sig() - before).mean()) < 0.5:
+                stable += 1
+                if stable >= 2:  # 连续两次都没变化，确认已在首页
+                    return
+            else:
+                stable = 0
+
+    def build_item_catalog(self) -> str:
+        import hashlib
+
+        import numpy as np
+
+        if not self._is_warehouse(self._texts()) and not self._open_warehouse():
+            return "未能打开仓库界面。"
+        self._warehouse_first_page()
+        icon_dir = self.catalog_file.parent / "item_icons"
+        icon_dir.mkdir(parents=True, exist_ok=True)
+        catalog = self._load_catalog()
+        known_hashes = [
+            e["hash"] for e in catalog.values() if isinstance(e, dict) and e.get("hash")
+        ]
+        added = skipped = 0
+        for _ in range(30):
+            image = self.screenshot()
+            cols = self._grid_cols(image) or list(WAREHOUSE_COLS)
+            for cy in WAREHOUSE_ROWS:
+                for cx in cols:
+                    shot = self.screenshot()  # 每格现截，避免中途滚动导致裁剪错位
+                    h = self._icon_hash(shot, cx, cy)
+                    if any(self._hamming(h, kh) <= 4 for kh in known_hashes):
+                        skipped += 1
+                        continue  # 已认识，跳过
+                    crop = shot.crop((cx - 58, cy - 58, cx + 58, cy + 58)).convert("L")
+                    for _ in range(3):  # 详情面板没弹出就重试
+                        self.click(cx, cy)
+                        time.sleep(1.6)
+                        if any("库存" in i.text for i in self.ocr()):
+                            break
+                    else:
+                        continue  # 空格子或点不中，跳过
+                    name = self._read_item_panel()[0]
+                    self.press_key(4)
+                    for _ in range(6):  # 等详情面板完全关闭再点下一格
+                        time.sleep(0.5)
+                        if not any("库存" in i.text for i in self.ocr()):
+                            break
+                    if name and name not in catalog:
+                        fname = hashlib.md5(name.encode("utf-8")).hexdigest()[:12] + ".png"
+                        crop.save(icon_dir / fname)
+                        center = np.asarray(shot.crop((cx - 30, cy - 30, cx + 30, cy + 30)))
+                        mean = center.reshape(-1, 3).mean(axis=0)
+                        catalog[name] = {
+                            "icon": f"item_icons/{fname}",
+                            "hash": h,
+                            "color": [round(float(v), 1) for v in mean],
+                        }
+                        known_hashes.append(h)
+                        added += 1
+            if not self._warehouse_next_page():
+                break
+        self._save_catalog(catalog)
+        return f"图标目录共 {len(catalog)} 种（本次新增 {added}，跳过已识别 {skipped}）。"
+
+    @staticmethod
+    def _name_close(a: str, b: str) -> bool:
+        if not a or not b:
+            return False
+        if a == b or a in b or b in a:
+            return True
+        sa, sb = set(a), set(b)
+        return len(sa & sb) / max(1, len(sa | sb)) >= 0.5
+
+    def _traverse_find(self, name: str, max_items: int = 200) -> str:
+        import numpy as np
+
+        self._warehouse_first_page()
+        self.click(WAREHOUSE_COLS[0], WAREHOUSE_ROWS[0])  # 从第一件开始
+        time.sleep(1.6)
+        for _ in range(max_items):
+            panel_name, qty = self._read_item_panel()
+            if panel_name and self._name_close(panel_name, name):
+                self.press_key(4)
+                time.sleep(1.0)
+                return f"「{panel_name}」当前数量：{qty or '读取失败'}"
+            before = self._screen_sig()
+            self.click(1888, 512)  # 右侧「>」下一件
+            for _ in range(10):
+                time.sleep(0.5)
+                if float(np.abs(self._screen_sig() - before).mean()) >= 0.5:
+                    break
+            else:
+                break
+        self.press_key(4)
+        time.sleep(1.0)
+        return f"在仓库里没找到「{name}」。"
+
+    @staticmethod
+    def _resolve_item(catalog: dict[str, Any], name: str) -> str | None:
+        if name in catalog:
+            return name
+        name_set = set(name)
+        best: str | None = None
+        best_score = 0.0
+        for k in catalog:
+            if name in k or k in name:
+                score = 0.9
+            else:
+                k_set = set(k)
+                score = len(name_set & k_set) / max(1, len(name_set | k_set))
+            if score > best_score:
+                best, best_score = k, score
+        return best if best_score >= 0.5 else None
+
+    def get_item_quantity(self, name: str) -> str:
+        import cv2
+        import numpy as np
+
+        catalog = self._load_catalog()
+        key = self._resolve_item(catalog, name)
+        if key is None:
+            if not self._is_warehouse(self._texts()) and not self._open_warehouse():
+                return "未能打开仓库界面。"
+            return self._traverse_find(name)  # 目录里没有，退化为遍历查找
+        name = key
+        entry = catalog.get(name)
+        icon_rel = entry.get("icon") if isinstance(entry, dict) else None
+        if not icon_rel:
+            return f"我还没记住「{name}」的图标，请让我先清点一次仓库。"
+        tmpl = cv2.imread(str(self.catalog_file.parent / icon_rel), cv2.IMREAD_GRAYSCALE)
+        if tmpl is None:
+            return f"「{name}」的图标文件缺失，请让我重新清点一次仓库。"
+        if not self._is_warehouse(self._texts()) and not self._open_warehouse():
+            return "未能打开仓库界面。"
+        self._warehouse_first_page()
+        target_color = entry.get("color") if isinstance(entry, dict) else None
+        for _ in range(8):
+            shot = self.screenshot()
+            arr = cv2.cvtColor(np.asarray(shot), cv2.COLOR_RGB2GRAY)
+            res = cv2.matchTemplate(arr, tmpl, cv2.TM_CCOEFF_NORMED)
+            _, maxv, _, maxloc = cv2.minMaxLoc(res)
+            if maxv >= 0.9 and (
+                target_color is None or self._color_ok(shot, maxloc, tmpl, target_color)
+            ):
+                cx = maxloc[0] + tmpl.shape[1] // 2
+                cy = maxloc[1] + tmpl.shape[0] // 2
+                for _ in range(3):  # 定位后点开详情，读清晰的大号「库存」数字
+                    self.click(cx, cy)
+                    time.sleep(1.6)
+                    if any("库存" in i.text for i in self.ocr()):
+                        break
+                else:
+                    if not self._warehouse_next_page():
+                        break
+                    continue
+                qty = self._read_item_panel()[1]
+                self.press_key(4)
+                time.sleep(1.2)
+                return f"「{name}」当前数量：{qty or '读取失败'}"
+            if not self._warehouse_next_page():
+                break
+        return self._traverse_find(name)  # 图标匹配不到，退化为遍历查找
+
+    @staticmethod
+    def _color_ok(image, loc, tmpl, target_color) -> bool:
+        import numpy as np
+
+        x0 = loc[0] + tmpl.shape[1] // 2 - 30
+        y0 = loc[1] + tmpl.shape[0] // 2 - 30
+        crop = np.asarray(image.crop((x0, y0, x0 + 60, y0 + 60)))
+        mean = crop.reshape(-1, 3).mean(axis=0)
+        diff = float(np.sum((mean - np.asarray(target_color, dtype=float)) ** 2))
+        return diff < 2000.0
 
     def analyze_screen(self, question: str) -> str:
         if self.llm is None:

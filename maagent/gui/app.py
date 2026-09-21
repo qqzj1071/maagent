@@ -33,6 +33,7 @@ from maagent.config import load_config
 from maagent.control.autostart import set_enabled as set_autostart
 from maagent.control.monthly import MonthlyState
 from maagent.control.process import close_all
+from maagent.control.game_time import game_weekday
 from maagent.control.weekly import WEEKDAY_NAMES, WeeklyState
 from maagent.core import workflow_config as wc
 from maagent.core.controller import WorkflowController
@@ -775,7 +776,7 @@ class MaAgentWindow(QMainWindow):
         return [i for i, btn in enumerate(self.day_buttons) if btn.isChecked()]
 
     def update_weekly_status(self) -> None:
-        today = datetime.now().weekday()
+        today = game_weekday()
         if not self.potion_section.is_enabled():
             self.weekly_status.setText("体力药刷取：已停用 → 始终关闭「使用药剂」")
             return
@@ -804,7 +805,7 @@ class MaAgentWindow(QMainWindow):
         self.on_weekly_changed()
 
     def update_annihilation_status(self) -> None:
-        today = datetime.now().weekday()
+        today = game_weekday()
         if not self.anni_section.is_enabled():
             self.anni_status.setText("剿灭刷取：已停用 → 始终取消勾选「剿灭刷取」")
             return

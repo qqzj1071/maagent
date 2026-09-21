@@ -72,6 +72,11 @@ class WorkflowPanel(Panel):
         mode_row.addStretch(1)
         self.add_layout(mode_row)
 
+        day_rule = QLabel(t("wf.game_day_hint"))
+        day_rule.setObjectName("Hint")
+        day_rule.setWordWrap(True)
+        self.add_widget(day_rule)
+
         self.seq_box = QWidget()
         seq_layout = QVBoxLayout(self.seq_box)
         seq_layout.setContentsMargins(0, 0, 0, 0)

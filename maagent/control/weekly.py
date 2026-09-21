@@ -8,6 +8,7 @@ from typing import Any
 import win32gui
 from loguru import logger
 
+from maagent.control.game_time import game_datetime, game_weekday
 from maagent.control.state import JsonState
 from maagent.control.popup import (
     _click_screen,
@@ -165,7 +166,7 @@ class MaaTaskToggle:
 # --------------------------------------------------------------------------- #
 def current_week_key(now: datetime | None = None) -> str:
     now = now or datetime.now()
-    iso = now.isocalendar()
+    iso = game_datetime(now).isocalendar()
     return f"{iso[0]}-W{iso[1]:02d}"
 
 
@@ -226,7 +227,7 @@ def today_uses_potion(weekly_cfg: dict[str, Any], now: datetime | None = None) -
     if not potion.get("enabled", False):
         return False
     days = potion.get("days") or []
-    weekday = (now or datetime.now()).weekday()
+    weekday = game_weekday(now)
     return weekday in days
 
 
@@ -237,7 +238,7 @@ def today_runs_annihilation(weekly_cfg: dict[str, Any], now: datetime | None = N
     day = cfg.get("day")
     if day is None:
         return False
-    return (now or datetime.now()).weekday() == int(day)
+    return game_weekday(now) == int(day)
 
 
 # --------------------------------------------------------------------------- #
@@ -253,7 +254,7 @@ def _apply_potion(hwnd: int, weekly_cfg: dict[str, Any]) -> dict[str, Any]:
     else:
         logger.info(
             "周常：今天 {}，应{}「{}」",
-            WEEKDAY_NAMES[now.weekday()],
+            WEEKDAY_NAMES[game_weekday(now)],
             "开启" if desired else "关闭",
             POTION_LABEL,
         )
@@ -292,7 +293,7 @@ def _apply_annihilation(
     elif done:
         logger.info("周常：本周剿灭已完成（{}），取消勾选「{}」", state.annihilation() if state else "", ANNIHILATION_TASK)
     elif not is_day:
-        logger.info("周常：今天 {} 不是剿灭刷取日 → 取消勾选「{}」", WEEKDAY_NAMES[now.weekday()], ANNIHILATION_TASK)
+        logger.info("周常：今天 {} 不是剿灭刷取日 → 取消勾选「{}」", WEEKDAY_NAMES[game_weekday(now)], ANNIHILATION_TASK)
     else:
         logger.info(
             "周常：剿灭刷取日（{}）→ 勾选「{}」并监控日志",
@@ -321,7 +322,7 @@ def apply_weekly(
 ) -> dict[str, Any]:
     result: dict[str, Any] = {
         "enabled": bool(weekly_cfg.get("enabled")),
-        "weekday": datetime.now().weekday(),
+        "weekday": game_weekday(),
         "potion": None,
         "annihilation": None,
     }

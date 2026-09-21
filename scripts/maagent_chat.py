@@ -83,6 +83,7 @@ def main() -> int:
     data = _data_dir()
     if _frozen():
         agent_cfg["memory_file"] = str(data / "agent_memory.json")
+        agent_cfg["catalog_file"] = str(data / "agent_item_catalog.json")
         knowledge = data / "agent_knowledge.json"
         bundled = Path(getattr(sys, "_MEIPASS", "")) / "config" / "agent_knowledge.json"
         if not knowledge.exists() and bundled.is_file():

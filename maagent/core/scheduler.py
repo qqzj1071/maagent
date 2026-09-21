@@ -8,6 +8,8 @@ from typing import Any
 
 from loguru import logger
 
+from maagent.control.game_time import game_day_key, game_weekday
+
 ALL_DAYS = [0, 1, 2, 3, 4, 5, 6]
 
 MODE_SEQUENTIAL = "sequential"
@@ -226,8 +228,8 @@ class Scheduler:
             return []
         chain = self.chain
         grace = int(chain.get("grace_minutes", 30) or 0)
-        today = now.strftime("%Y-%m-%d")
-        weekday = now.weekday()
+        today = game_day_key(now)
+        weekday = game_weekday(now)
         events: list[ScheduleEvent] = []
 
         if self.mode() == MODE_SEQUENTIAL:
@@ -292,7 +294,7 @@ class Scheduler:
 
     def mark(self, event: ScheduleEvent, now: datetime | None = None) -> None:
         now = now or datetime.now()
-        today = now.strftime("%Y-%m-%d")
+        today = game_day_key(now)
         if event.kind == "chain":
             if event.chain_time:
                 self._mark_chain(event.chain_time, today)
@@ -328,6 +330,6 @@ class Scheduler:
             candidate = datetime.combine(day, datetime.min.time()).replace(
                 hour=start_min // 60, minute=start_min % 60
             )
-            if candidate.weekday() in days and candidate > now:
+            if game_weekday(candidate) in days and candidate > now:
                 return candidate
         return now
