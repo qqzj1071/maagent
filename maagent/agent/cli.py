@@ -53,7 +53,7 @@ def run_chat(config: dict[str, Any]) -> int:
                 on_event=lambda kind, payload: print(f"  [工具] {payload['name']} -> {payload['result']}"),
             )
         except Exception as e:
-            print(f"（出错：{e}）")
+            print(f"（网络好像不太稳定，博士稍等一下再问我一次吧。技术细节：{e}）")
             continue
         print(f"{name}> {reply}\n")
 

@@ -61,10 +61,20 @@ GUI_FINISH_MARKERS = ("任务已全部完成", "全部任务已完成", "全部�
 RUNNING_KEYWORDS = ["停止", "中止"]
 IDLE_KEYWORDS = ["Link", "Start", "开始"]
 START_KEYWORDS = ["连接成功", "开始任务", "开始唤醒", "理智作战", "基建换班"]
-COMPLETE_KEYWORDS = ["全部任务已完成", "任务已完成", "任务完成", "全部完成", "已完成"]
+COMPLETE_KEYWORDS = ["全部任务已完成", "任务已完成", "任务完成", "全部完成", "已完成", "任务已全部完成"]
 ERROR_KEYWORDS = ["错误", "失败", "异常", "出错", "无法"]
 CONNECTION_FAIL_KEYWORDS = ["连接失败", "连接错误", "连接超时", "无法连接", "连接中断", "重连失败"]
 CONNECTION_OK_KEYWORDS = ["连接成功", "已连接", "连接正常", "重新连接成功"]
+# Signs that MAA moved past a transient failure (reconnected / started a task),
+# so an earlier 连接失败 that MAA retried past should not be fatal.
+RECOVERY_KEYWORDS = CONNECTION_OK_KEYWORDS + [
+    "开始任务",
+    "完成任务",
+    "任务完成",
+    "正在运行",
+    "重连成功",
+    "重新连接",
+]
 SUBTASK_ERROR_KEYWORDS = ["任务出错", "任务异常", "执行异常", "子任务"]
 IGNORE_ERROR_KEYWORDS = ["FPS", "补帧", "画面"]
 
@@ -178,15 +188,16 @@ class MaaLogMonitor:
     def classify(self) -> tuple[list[str], list[str]]:
         """Split problem lines into (fatal errors, sub-task warnings).
 
-        - A connection failure is ignored when MAA later connects successfully
-          (it retried), so a transient drop is not reported as a failure.
+        - A connection failure is ignored when MAA later reconnects or starts a
+          task, so a transient emulator drop that MAA retries past is not fatal.
         - Task-level lines like 「任务出错：仓库识别」 are sub-task warnings, not
           fatal errors (mirrors the MaaEnd report's 子任务报错 handling).
         """
-        ok_positions = [
+        completed = any(any(k in ln for k in COMPLETE_KEYWORDS) for ln in self.logs)
+        recovery_positions = [
             i
             for i, ln in enumerate(self.logs)
-            if any(k in ln for k in CONNECTION_OK_KEYWORDS)
+            if any(k in ln for k in RECOVERY_KEYWORDS)
         ]
         errors: list[str] = []
         warnings: list[str] = []
@@ -198,8 +209,9 @@ class MaaLogMonitor:
             if any(k in ln for k in SUBTASK_ERROR_KEYWORDS):
                 warnings.append(ln)
             elif any(k in ln for k in CONNECTION_FAIL_KEYWORDS):
-                if not any(pos > i for pos in ok_positions):
-                    errors.append(ln)
+                if completed or any(pos > i for pos in recovery_positions):
+                    continue
+                errors.append(ln)
             else:
                 errors.append(ln)
         return errors, warnings

@@ -41,7 +41,7 @@ SYSTEM_TEMPLATE = """{persona}
 - 查看某干员的练度（等级/精英化/潜能/信赖/技能专精/模组）→ get_operator_training(name)
 - 清点/查看仓库全部物品 → get_warehouse_inventory（逐个读取并汇总名称与数量）
 - 让记住仓库物品的图标（建立图标目录）→ build_item_catalog（「记住仓库里的物品/认一下材料图标」）
-- 按名称查某种物品数量（「我还有多少龙门币/固源岩」）→ get_item_quantity(name)（先定位图标直接读数量；若提示还没记住，先 build_item_catalog）
+- 按名称查某种物品的数量或过期时间（「我还有多少龙门币/固源岩」「常态事务代理卡什么时候过期」）→ 直接调用 get_item_quantity(name)，它会把数量和过期时间一起读出来；**不要自己截图或点击去仓库里找**
 - 查看当前画面/模拟器内容 → screenshot 或 analyze_screen（会自动把模拟器窗口置前）；按文字点击 → find_and_click；按坐标点击 → click
 - 问游戏机制、术语、干员数值/技能 → search_knowledge（《明日方舟》PRTS 知识库，含全部干员与作战机制）
 - 问最新活动/公告等时效信息 → web_search（并标注来源）

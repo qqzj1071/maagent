@@ -57,7 +57,7 @@ class OpenAICompatLLM:
         vision_model: str | None = None,
         temperature: float = 0.7,
         timeout: float = 90.0,
-        max_retries: int = 5,
+        max_retries: int = 6,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
@@ -97,7 +97,7 @@ class OpenAICompatLLM:
             if resp.status_code == 200:
                 return resp.json()
             detail = resp.text[:300]
-            if resp.status_code in (429, 500, 502, 503, 504):
+            if resp.status_code in (408, 409, 425, 429, 500, 502, 503, 504):
                 last = LLMError(f"HTTP {resp.status_code}: {detail}")
                 delay = self._retry_delay(attempt, resp)
                 logger.warning("LLM 返回 {}（第 {} 次），{}s 后重试", resp.status_code, attempt, delay)

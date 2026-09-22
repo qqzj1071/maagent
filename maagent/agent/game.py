@@ -47,6 +47,35 @@ ALL_FILTER_Y = 136
 WAREHOUSE_COLS = (185, 430, 675, 920, 1160, 1400, 1645, 1890)
 WAREHOUSE_ROWS = (260, 543, 827)
 
+# 博士常用的口语/简称 → 仓库中的正式名称（模糊识别兜底）
+ITEM_ALIASES = {
+    "理智药": "应急理智加强剂",
+    "理智剂": "应急理智加强剂",
+    "理智液": "应急理智加强剂",
+    "体力药": "应急理智加强剂",
+    "理智": "应急理智加强剂",
+    "剿灭卡": "常态事务代理卡",
+    "代理卡": "常态事务代理卡",
+    "剿灭": "常态事务代理卡",
+    "钱": "龙门币",
+    "金币": "龙门币",
+    "龙门币": "龙门币",
+    "源石": "至纯源石",
+    "源石玉": "合成玉",
+    "合成石": "合成玉",
+    "寻访券": "寻访凭证",
+    "十连券": "十连寻访凭证",
+    "招聘": "招聘许可",
+    "加急": "加急许可",
+    "黄票": "高级凭证",
+    "绿票": "资质凭证",
+    "红票": "采购凭证",
+    "基建材料": "碳素",
+    "作战记录": "中级作战记录",
+    "技巧概要": "技巧概要·卷3",
+    "芯片": "先锋芯片组",
+}
+
 
 def _is_start_button(text: str) -> bool:
     t = text.strip()
@@ -78,6 +107,7 @@ class GameService:
         self.catalog_file = Path(catalog_file or "config/agent_item_catalog.json")
         self.address: str | None = None
         self._game = None
+        self._wh_first = False  # 仓库是否已确认在第一页（缓存，省去重复回退）
 
     # ---------- emulator process ----------
     def _mumu_info(self) -> dict[str, Any]:
@@ -657,6 +687,7 @@ class GameService:
         return ("全部" in texts or "消耗物品" in texts or "养成材料" in texts) and "保险库" in texts
 
     def _open_warehouse(self) -> bool:
+        self._wh_first = False
         for _ in range(6):
             items = self.ocr()
             texts = [i.text.strip() for i in items]
@@ -678,12 +709,20 @@ class GameService:
             time.sleep(1.8)
         return self._is_warehouse(self._texts())
 
-    def _read_item_panel(self) -> tuple[str | None, str | None]:
-        items = self.ocr()
+    @staticmethod
+    def _parse_expiry(text: str) -> str | None:
+        m = re.search(r"(\d{1,2})/(\d{1,2})\D*(\d{1,2}):(\d{2})", text)
+        if m:
+            return f"{int(m.group(1)):02d}/{int(m.group(2)):02d} {int(m.group(3)):02d}:{m.group(4)}"
+        return None
+
+    def _read_item_panel(self, items=None) -> tuple[str | None, str | None, str | None]:
+        if items is None:
+            items = self.ocr()
         names = [
             i for i in items
             if 250 < i.center[0] < 1150 and 185 < i.center[1] < 320
-            and i.text.strip() and "库存" not in i.text
+            and i.text.strip() and "库存" not in i.text and "到期" not in i.text
         ]
         name = min(names, key=lambda i: i.center[0]).text.strip() if names else None
         qty = next(
@@ -691,12 +730,17 @@ class GameService:
              if 1430 < i.center[0] < 1670 and 200 < i.center[1] < 300 and i.text.strip()),
             None,
         )
-        return name, qty
+        expiry = next(
+            (e for i in items
+             if (e := self._parse_expiry(i.text)) or "到期" in i.text),
+            None,
+        )
+        return name, qty, expiry
 
-    def _screen_sig(self):
+    def _screen_sig(self, image=None):
         import numpy as np
 
-        img = self.screenshot().convert("L").resize((64, 36))
+        img = (image or self.screenshot()).convert("L").resize((64, 36))
         return np.asarray(img, dtype=np.int16)
 
     def get_warehouse_inventory(self, max_items: int = 600) -> str:
@@ -809,34 +853,39 @@ class GameService:
             return None
         return "".join(texts)
 
-    def _warehouse_next_page(self) -> bool:
+    def _warehouse_next_page(self, before=None) -> bool:
         import numpy as np
 
-        before = self._screen_sig()
-        self.swipe(1700, 500, 200, 500, 500)
-        time.sleep(1.5)
-        for _ in range(12):
-            s1 = self._screen_sig()
-            time.sleep(0.6)
-            s2 = self._screen_sig()
-            if float(np.abs(s1 - s2).mean()) < 0.3:  # 画面已稳定
-                return float(np.abs(s2 - before).mean()) >= 0.5
+        if before is None:
+            before = self._screen_sig()
+        self.swipe(1700, 500, 200, 500, 400)
+        time.sleep(1.4)
+        for _ in range(5):
+            if float(np.abs(self._screen_sig() - before).mean()) >= 0.5:
+                self._wh_first = False  # 已经翻页，不再是首页
+                return True
+            time.sleep(0.5)
         return False
 
     def _warehouse_first_page(self) -> None:
         import numpy as np
 
+        if self._wh_first:  # 上次已确认在首页，直接复用
+            return
         stable = 0
+        prev = self._screen_sig()
         for _ in range(30):
-            before = self._screen_sig()
-            self.swipe(200, 500, 1700, 500, 500)
-            time.sleep(1.2)
-            if float(np.abs(self._screen_sig() - before).mean()) < 0.5:
+            self.swipe(200, 500, 1700, 500, 400)
+            time.sleep(1.1)
+            cur = self._screen_sig()
+            if float(np.abs(cur - prev).mean()) < 0.5:
                 stable += 1
                 if stable >= 2:  # 连续两次都没变化，确认已在首页
+                    self._wh_first = True
                     return
             else:
                 stable = 0
+            prev = cur
 
     def build_item_catalog(self) -> str:
         import hashlib
@@ -895,51 +944,89 @@ class GameService:
         return f"图标目录共 {len(catalog)} 种（本次新增 {added}，跳过已识别 {skipped}）。"
 
     @staticmethod
-    def _name_close(a: str, b: str) -> bool:
+    def _name_score(a: str, b: str) -> float:
         if not a or not b:
-            return False
-        if a == b or a in b or b in a:
-            return True
+            return 0.0
+        if a == b:
+            return 1.0
+        if a in b or b in a:
+            return 0.9
+        la, lb = len(a), len(b)
+        dp = [0] * (lb + 1)
+        best = 0
+        for i in range(1, la + 1):
+            prev = 0
+            for j in range(1, lb + 1):
+                cur = dp[j]
+                if a[i - 1] == b[j - 1]:
+                    dp[j] = prev + 1
+                    if dp[j] > best:
+                        best = dp[j]
+                else:
+                    dp[j] = 0
+                prev = cur
+        lcs = best / min(la, lb)  # 最长公共子串占比
         sa, sb = set(a), set(b)
-        return len(sa & sb) / max(1, len(sa | sb)) >= 0.5
+        overlap = len(sa & sb) / max(1, len(sa | sb))
+        return max(lcs, overlap)
+
+    @classmethod
+    def _name_close(cls, a: str, b: str) -> bool:
+        return cls._name_score(a, b) >= 0.5
+
+    @classmethod
+    def _traverse_match(cls, panel_name: str, query: str) -> bool:
+        """遍历时的匹配要严格些，避免误认（如「固源岩」误配「提纯源岩」）。"""
+        if panel_name == query or query in panel_name or panel_name in query:
+            return True
+        alias = ITEM_ALIASES.get(query)
+        if alias and (panel_name == alias or alias in panel_name):
+            return True
+        return cls._name_score(panel_name, query) >= 0.75
 
     def _traverse_find(self, name: str, max_items: int = 200) -> str:
         import numpy as np
 
         self._warehouse_first_page()
-        self.click(WAREHOUSE_COLS[0], WAREHOUSE_ROWS[0])  # 从第一件开始
-        time.sleep(1.6)
-        for _ in range(max_items):
-            panel_name, qty = self._read_item_panel()
-            if panel_name and self._name_close(panel_name, name):
-                self.press_key(4)
-                time.sleep(1.0)
-                return f"「{panel_name}」当前数量：{qty or '读取失败'}"
-            before = self._screen_sig()
-            self.click(1888, 512)  # 右侧「>」下一件
-            for _ in range(10):
-                time.sleep(0.5)
-                if float(np.abs(self._screen_sig() - before).mean()) >= 0.5:
-                    break
-            else:
+        for _ in range(3):  # 从第一件开始，确保点开
+            self.click(WAREHOUSE_COLS[0], WAREHOUSE_ROWS[0])
+            time.sleep(1.6)
+            if any("库存" in i.text for i in self.ocr()):
                 break
+        else:
+            return f"在仓库里没找到「{name}」。"
+        prev_text = None
+        for _ in range(max_items):
+            items = self.ocr()
+            panel_name, qty, expiry = self._read_item_panel(items)
+            if panel_name and self._traverse_match(panel_name, name):
+                self.press_key(4)
+                time.sleep(0.8)
+                info = f"「{panel_name}」当前数量：{qty or '读取失败'}"
+                if expiry:
+                    info += f"（{expiry} 到期）"
+                return info
+            text = " ".join(i.text for i in items)
+            if text == prev_text:
+                break  # 内容不再变化，已到末尾
+            prev_text = text
+            self.click(1888, 512)  # 右侧「>」下一件
+            time.sleep(1.0)
         self.press_key(4)
-        time.sleep(1.0)
+        time.sleep(0.8)
         return f"在仓库里没找到「{name}」。"
 
-    @staticmethod
-    def _resolve_item(catalog: dict[str, Any], name: str) -> str | None:
+    @classmethod
+    def _resolve_item(cls, catalog: dict[str, Any], name: str) -> str | None:
         if name in catalog:
             return name
-        name_set = set(name)
+        alias = ITEM_ALIASES.get(name)
+        if alias:  # 别名优先，即使目录里暂时没有该物品
+            return alias
         best: str | None = None
         best_score = 0.0
         for k in catalog:
-            if name in k or k in name:
-                score = 0.9
-            else:
-                k_set = set(k)
-                score = len(name_set & k_set) / max(1, len(name_set | k_set))
+            score = cls._name_score(name, k)
             if score > best_score:
                 best, best_score = k, score
         return best if best_score >= 0.5 else None
@@ -949,11 +1036,12 @@ class GameService:
         import numpy as np
 
         catalog = self._load_catalog()
+        query = name  # 保留博士的原话，兜底时用它去找
         key = self._resolve_item(catalog, name)
-        if key is None:
+        if key is None or key not in catalog:
             if not self._is_warehouse(self._texts()) and not self._open_warehouse():
                 return "未能打开仓库界面。"
-            return self._traverse_find(name)  # 目录里没有，退化为遍历查找
+            return self._traverse_find(query)  # 目录里没有，退化为遍历查找
         name = key
         entry = catalog.get(name)
         icon_rel = entry.get("icon") if isinstance(entry, dict) else None
@@ -978,20 +1066,22 @@ class GameService:
                 cy = maxloc[1] + tmpl.shape[0] // 2
                 for _ in range(3):  # 定位后点开详情，读清晰的大号「库存」数字
                     self.click(cx, cy)
-                    time.sleep(1.6)
-                    if any("库存" in i.text for i in self.ocr()):
-                        break
-                else:
-                    if not self._warehouse_next_page():
-                        break
-                    continue
-                qty = self._read_item_panel()[1]
-                self.press_key(4)
-                time.sleep(1.2)
-                return f"「{name}」当前数量：{qty or '读取失败'}"
-            if not self._warehouse_next_page():
+                    time.sleep(1.4)
+                    items = self.ocr()
+                    if any("库存" in i.text for i in items):
+                        _, qty, expiry = self._read_item_panel(items)
+                        self.press_key(4)
+                        time.sleep(0.8)
+                        info = f"「{name}」当前数量：{qty or '读取失败'}"
+                        if expiry:
+                            info += f"（{expiry} 到期）"
+                        return info
+                if not self._warehouse_next_page(self._screen_sig(shot)):
+                    break
+                continue
+            if not self._warehouse_next_page(self._screen_sig(shot)):
                 break
-        return self._traverse_find(name)  # 图标匹配不到，退化为遍历查找
+        return self._traverse_find(query)  # 图标匹配不到，退化为遍历查找
 
     @staticmethod
     def _color_ok(image, loc, tmpl, target_color) -> bool:
