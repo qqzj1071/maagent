@@ -10,7 +10,7 @@ import win32gui
 from loguru import logger
 from PIL import Image
 
-from maagent.control.popup import capture_window, crop_region, recognize
+from maagent.control.popup import capture_window, crop_region, main_window, recognize
 
 SANITY_RECOVER_MINUTES = 6
 
@@ -141,8 +141,21 @@ class MaaLogMonitor:
                     pass
         return False
 
+    def current_hwnd(self) -> int | None:
+        """Re-resolve the MAA window after an auto-update/restart invalidates it."""
+        if self.hwnd and win32gui.IsWindow(self.hwnd):
+            return self.hwnd
+        fresh = main_window()
+        if fresh:
+            self.hwnd = fresh
+            return fresh
+        return None
+
     def _crop(self, region: tuple[float, float, float, float]) -> Image.Image | None:
-        img = capture_window(self.hwnd)
+        hwnd = self.current_hwnd()
+        if hwnd is None:
+            return None
+        img = capture_window(hwnd)
         if img is None:
             return None
         return img.crop(crop_region(img, region))
@@ -217,7 +230,7 @@ class MaaLogMonitor:
         return errors, warnings
 
     def _alive(self) -> bool:
-        return bool(win32gui.IsWindow(self.hwnd))
+        return self.current_hwnd() is not None
 
     def wait_idle(
         self,

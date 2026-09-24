@@ -256,12 +256,13 @@ class Orchestrator(BaseWorkflow):
             logger.info("MAA 正在启动模拟器阶段，等待其结束...")
             logmon.wait_idle(timeout=wf.get("emulator_wait_timeout", 180), interval=3.0)
 
-        hwnd = logmon.hwnd
         start_timeout = wf.get("start_timeout", 90)
         hotkey_timeout = min(20, start_timeout)
         for attempt in range(1, 4):
             self._check_stop()
             monitor.scan_once()
+            # Re-resolve in case MAA auto-updated and restarted (new window handle).
+            hwnd = logmon.current_hwnd()
             # The start hotkey goes to the focused window, so bring MAA to the front.
             if hwnd:
                 ensure_visible(hwnd)
@@ -273,7 +274,7 @@ class Orchestrator(BaseWorkflow):
                 return True
             # The hotkey may be unset/disabled in MAA; fall back to clicking the button.
             logger.info("Link Start 热键未生效，改为点击按钮")
-            if self._click_link_start(hwnd) and self._wait_started(
+            if self._click_link_start(logmon.current_hwnd()) and self._wait_started(
                 logmon, monitor, start_timeout
             ):
                 return True
@@ -360,5 +361,13 @@ class Orchestrator(BaseWorkflow):
             report.next_deadline = compute_next_deadline(end_t, sanity[0], sanity[1])
 
     def _auto_close(self) -> None:
+        # If MAA is still running a task (e.g. we misread the start), leave it alone.
+        try:
+            hwnd = main_window()
+            if hwnd is not None and MaaLogMonitor(hwnd).button_state() == "running":
+                logger.info("MAA 仍在运行任务，跳过自动关闭")
+                return
+        except Exception:
+            pass
         logger.info("任务完成，自动关闭 MAA 与模拟器")
         close_all(self.config.get("adapters", {}).get("maa", {}).get("emulator", {}))
