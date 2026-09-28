@@ -19,6 +19,7 @@ from maagent.control.maaend import (
     press_hotkey,
 )
 from maagent.control.maaend_api import DEFAULT_PORT, MaaEndApi
+from maagent.control.popup import MaaPopupMonitor
 from maagent.control.process import close_maa, process_running, spawn
 from maagent.core.base import BaseWorkflow
 from maagent.report.generator import RunReport
@@ -26,6 +27,18 @@ from maagent.report.generator import RunReport
 GAME_NAME = "明日方舟：终末地"
 ERROR_TYPES = {"error", "warning", "warn"}
 ERROR_KEYWORDS = ("失败", "错误", "异常", "出错", "无法", "超时")
+
+# Log markers that prove MaaEnd has actually submitted the task list (the HTTP
+# ``is_running`` flag can lag or be missing right after an auto-update, so we
+# detect the running state from the log too — mirrors MAA's log-based checks).
+RUNNING_MARKERS = ("任务已提交", "开始执行任务", "任务已在运行")
+DONE_MARKERS = ("全部完成", "任务已完成", "任务结束")
+
+
+def _is_done_message(message: str) -> bool:
+    return any(k in message for k in DONE_MARKERS) or (
+        "结束进程" in message and "完成" in message
+    )
 
 # 终末地理智：7 分 12 秒恢复 1 点（24 小时 200 点）
 SANITY_RECOVER_SECONDS = 7 * 60 + 12
@@ -88,6 +101,7 @@ class MaaEndOrchestrator(BaseWorkflow):
     ) -> None:
         super().__init__(config, stop_event)
         self.cfg = (config.get("adapters", {}) or {}).get("maaend", {}) or {}
+        self._popup_monitor: MaaPopupMonitor | None = None
 
     def _game_name(self) -> str:
         return GAME_NAME
@@ -129,6 +143,10 @@ class MaaEndOrchestrator(BaseWorkflow):
             report.errors.append("未找到 MaaEnd 实例")
             return
         logger.info("MaaEnd 实例: {}", instance_id)
+        self._popup_monitor = MaaPopupMonitor(
+            process_name=PROCESS_NAME,
+            debug_dir=(cfg.get("popup_debug_dir") or "logs/popups"),
+        )
         self._ensure_global_hotkeys(api)
         log_dir = cfg.get("log_dir")
         if launched and not self._wait_hotkeys(log_dir, 40, since=launch_time):
@@ -152,10 +170,7 @@ class MaaEndOrchestrator(BaseWorkflow):
 
         logger.info("=== 终末地 步骤 4/5: 汇总日志并生成报告 ===")
         time.sleep(2)
-        entries = [
-            e for e in ((api.logs() or {}).get(instance_id) or [])
-            if str(e.get("timestamp", "")) > since
-        ]
+        entries = self._fetch_entries(api, instance_id, since)
         self._populate(report, entries, cfg.get("log_dir"))
 
         if result == "timeout":
@@ -259,15 +274,17 @@ class MaaEndOrchestrator(BaseWorkflow):
         return False
 
     def _nudge_start(self) -> None:
-        """Re-send the start hotkey / click the button when the task hasn't started."""
-        try:
-            press_hotkey(START_HOTKEY)
-        except Exception as e:
-            logger.warning("终末地：重发开始热键失败: {}", e)
+        """Re-trigger the start when the task hasn't started yet.
+
+        Only clicks the 开始任务 button: re-sending the global F10 hotkey while
+        the task is already running makes MaaEnd reject it with 「任务启动失败：
+        任务已在运行」and can drop the controller connection, so we avoid it here.
+        """
+        self._dismiss_popups()
         try:
             MaaEndUI().press_start()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("终末地：点击「开始任务」失败: {}", e)
 
     @staticmethod
     def _new_messages(api: MaaEndApi, instance_id: str, since: str) -> list[str]:
@@ -303,21 +320,33 @@ class MaaEndOrchestrator(BaseWorkflow):
         task actually runs, which can take a minute or two."""
         start_deadline = time.time() + start_timeout
         running = False
+        # True only if the HTTP ``is_running`` flag was ever observed true, so we
+        # know it actually reflects the state (and can trust it flipping false).
+        saw_state_running = False
         next_retry = time.time() + 40
         while time.time() < start_deadline:
             self._check_stop()
-            if any("结束进程" in m and "完成" in m for m in self._new_messages(api, instance_id, since)):
+            self._dismiss_popups()
+            messages = self._new_messages(api, instance_id, since)
+            if any(_is_done_message(m) for m in messages):
                 logger.info("终末地：任务已结束")
                 return "complete"
+            if any(any(k in m for k in RUNNING_MARKERS) for m in messages):
+                running = True
+                break
             try:
-                if api.instance_state(instance_id).get("is_running"):
+                if api.is_running(instance_id):
                     running = True
+                    saw_state_running = True
                     break
             except Exception:
                 pass
             if time.time() >= next_retry:
-                logger.info("终末地：任务尚未进入运行状态，重试触发开始")
-                self._nudge_start()
+                # Only nudge while nothing proves the task was submitted — once it
+                # is running (or preparing), re-triggering only hurts.
+                if not any(any(k in m for k in RUNNING_MARKERS) for m in messages):
+                    logger.info("终末地：任务尚未进入运行状态，重试触发开始")
+                    self._nudge_start()
                 next_retry = time.time() + 40
             time.sleep(3.0)
         if not running:
@@ -328,14 +357,45 @@ class MaaEndOrchestrator(BaseWorkflow):
         deadline = time.time() + timeout
         while time.time() < deadline:
             self._check_stop()
+            self._dismiss_popups()
+            if any(_is_done_message(m) for m in self._new_messages(api, instance_id, since)):
+                logger.info("终末地：任务已结束")
+                return "complete"
             try:
-                if not api.instance_state(instance_id).get("is_running"):
+                if saw_state_running and not api.is_running(instance_id):
                     logger.info("终末地：任务已结束")
                     return "complete"
             except Exception:
                 pass
             time.sleep(5.0)
         return "timeout"
+
+    def _dismiss_popups(self) -> None:
+        """Dismiss MaaEnd popups (update prompts etc.) the same way we do for MAA."""
+        if self._popup_monitor is None:
+            return
+        try:
+            self._popup_monitor.scan_once()
+        except Exception as e:
+            logger.warning("终末地：弹窗处理异常: {}", e)
+
+    @staticmethod
+    def _fetch_entries(
+        api: MaaEndApi, instance_id: str, since: str, retries: int = 3
+    ) -> list[dict[str, Any]]:
+        """Fetch the run's log entries, retrying on transient API timeouts."""
+        last: Exception | None = None
+        for attempt in range(retries):
+            try:
+                return [
+                    e for e in ((api.logs() or {}).get(instance_id) or [])
+                    if str(e.get("timestamp", "")) > since
+                ]
+            except Exception as e:  # noqa: BLE001 - last error surfaces below
+                last = e
+                time.sleep(2.0)
+        logger.warning("终末地：拉取日志失败（重试 {} 次）: {}", retries, last)
+        return []
 
     @staticmethod
     def _last_log_timestamp(api: MaaEndApi, instance_id: str) -> str:

@@ -74,4 +74,23 @@ class MaaEndApi:
 
     def instance_state(self, instance_id: str | None = None) -> dict[str, Any]:
         instance_id = instance_id or self.instance_id()
-        return (self.state().get("instances") or {}).get(instance_id or "", {})
+        instances = self.state().get("instances") or {}
+        if isinstance(instances, dict):
+            return instances.get(instance_id or "", {})
+        # some builds expose ``instances`` as a list of {id, ...} objects
+        if isinstance(instances, list):
+            for item in instances:
+                if isinstance(item, dict) and item.get("id") == instance_id:
+                    return item
+        return {}
+
+    @staticmethod
+    def _is_running_flag(state: dict[str, Any]) -> bool:
+        for key in ("is_running", "isRunning", "running"):
+            value = state.get(key)
+            if isinstance(value, bool):
+                return value
+        return False
+
+    def is_running(self, instance_id: str | None = None) -> bool:
+        return self._is_running_flag(self.instance_state(instance_id))
