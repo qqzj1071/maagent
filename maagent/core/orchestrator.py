@@ -31,7 +31,6 @@ from maagent.control.process import close_all
 from maagent.control.weekly import (
     ANNIHILATION_TASK,
     DEFAULT_ANNIHILATION_CAP,
-    MaaTaskToggle,
     WeeklyState,
     annihilation_config,
     apply_weekly,
@@ -157,7 +156,7 @@ class Orchestrator(BaseWorkflow):
         def _poll() -> None:
             self._check_stop()
             monitor.scan_once()
-            self._check_annihilation(logmon, hwnd)
+            self._check_annihilation(logmon)
 
         result = logmon.wait_idle(
             timeout=wf.get("daily_timeout_seconds", 3600),
@@ -166,7 +165,7 @@ class Orchestrator(BaseWorkflow):
         )
         run_seconds = time.time() - run_start
         logger.info("监控结束: {}（运行 {} 秒）", result, int(run_seconds))
-        self._finalize_annihilation(report, logmon, hwnd)
+        self._finalize_annihilation(report, logmon)
 
         report.logs = logmon.logs
         report.popups_closed = monitor.closed
@@ -202,8 +201,14 @@ class Orchestrator(BaseWorkflow):
         cfg = annihilation_config(self.config.get("weekly", {}))
         return int(cfg.get("cap", DEFAULT_ANNIHILATION_CAP))
 
-    def _check_annihilation(self, logmon: MaaLogMonitor, hwnd: int) -> None:
-        """Watch the panel log and, once 剿灭模式 hits the weekly cap, uncheck it."""
+    def _check_annihilation(self, logmon: MaaLogMonitor) -> None:
+        """Record 剿灭刷取 progress from the panel log.
+
+        Once the weekly cap is reached the state is marked done, but the task's
+        checkbox is left alone — ``apply_weekly`` at the start of the *next* run
+        reads the persisted state and unchecks it then, so the running task is
+        never disturbed.
+        """
         weekly_cfg = self.config.get("weekly", {})
         if not annihilation_config(weekly_cfg).get("enabled"):
             return
@@ -216,20 +221,16 @@ class Orchestrator(BaseWorkflow):
         self.weekly_state.set_annihilation(progress, cap)
         if self.weekly_state.annihilation_done(cap):
             logger.info(
-                "周常：剿灭刷取已完成（剿灭模式 {}/{}），取消勾选「{}」",
+                "周常：剿灭刷取已完成（剿灭模式 {}/{}），下次运行时取消勾选「{}」",
                 progress, cap, ANNIHILATION_TASK,
             )
-            try:
-                MaaTaskToggle().set_state(hwnd, ANNIHILATION_TASK, False)
-            except Exception as e:
-                logger.warning("周常：取消勾选剿灭刷取失败: {}", e)
 
-    def _finalize_annihilation(self, report: RunReport, logmon: MaaLogMonitor, hwnd: int) -> None:
+    def _finalize_annihilation(self, report: RunReport, logmon: MaaLogMonitor) -> None:
         weekly_cfg = self.config.get("weekly", {})
         if not annihilation_config(weekly_cfg).get("enabled"):
             return
         cap = self._anni_cap()
-        self._check_annihilation(logmon, hwnd)
+        self._check_annihilation(logmon)
         progress = int(self.weekly_state.annihilation().get("progress", 0))
         if self.weekly_state.annihilation_done(cap):
             report.annihilation = f"已完成剿灭作战（剿灭模式 {progress}/{cap}）"

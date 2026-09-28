@@ -55,8 +55,11 @@ def compute_next_deadline(
 LOG_REGION = (0.655, 0.15, 0.995, 0.98)
 BUTTON_REGION = (0.10, 0.83, 0.29, 0.97)
 
-# MAA's gui.log completion markers (its own wording, not the panel's)
-GUI_FINISH_MARKERS = ("任务已全部完成", "全部任务已完成", "全部完成")
+# MAA's gui.log completion markers (its own wording, not the panel's).
+# A clean run writes 「任务已全部完成！」; a run with a sub-task hiccup (e.g.
+# 仓库识别) still finishes the queue and writes 「任务已完成，但出现错误！」,
+# which must also count as done (otherwise the run is misreported as 超时).
+GUI_FINISH_MARKERS = ("任务已全部完成", "全部任务已完成", "全部完成", "任务已完成")
 
 RUNNING_KEYWORDS = ["停止", "中止"]
 IDLE_KEYWORDS = ["Link", "Start", "开始"]
