@@ -71,8 +71,8 @@ monthly:
 adapters:
   maa:
     enabled: true
-    path: "D:/MAA"
-    executable: "D:/MAA/MAA.exe"
+    path: "E:/MAA"
+    executable: "E:/MAA/MAA.exe"
     wait_seconds: 10
     emulator:
       manager_path: "D:/tools/MuMuPlayer/nx_main/MuMuManager.exe"
@@ -83,11 +83,11 @@ adapters:
       debug_dir: "logs/popups"
   maaend:
     enabled: true
-    path: "D:/MaaEnd-win-x86_64-v2.7.0"
-    executable: "D:/MaaEnd-win-x86_64-v2.7.0/MaaEnd.exe"
+    path: "E:/MaaEnd-win-x86_64-v2.7.0"
+    executable: "E:/MaaEnd-win-x86_64-v2.7.0/MaaEnd.exe"
     wait_seconds: 30            # 启动后等待主窗口的时间
     auto_close: true            # 任务完成并发送报告后自动关闭 MaaEnd 与终末地
-    log_dir: "D:/MaaEnd-win-x86_64-v2.7.0/debug"   # 会话日志所在目录
+    log_dir: "E:/MaaEnd-win-x86_64-v2.7.0/debug"   # 会话日志所在目录
     web_port: 12701
     game_process: "Endfield.exe"
     game_start_timeout: 300     # 等待终末地进程启动并进入运行状态

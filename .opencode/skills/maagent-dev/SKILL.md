@@ -167,7 +167,7 @@ send email.
 
 ## Config essentials (`config/config.yaml`)
 
-- `adapters.maa.executable` — `D:/MAA/MAA.exe`
+- `adapters.maa.executable` — `E:/MAA/MAA.exe`
 - `adapters.maa.emulator.manager_path` — `D:/tools/MuMuPlayer/nx_main/MuMuManager.exe`
 - `workflow.*` — `start_timeout`, `daily_timeout_seconds`, `min_runtime_seconds`, `poll_interval`
 - `notify.email.*` — QQ SMTP (`smtp.qq.com:465`) with the 16-char **authorization code** (not the login password)
