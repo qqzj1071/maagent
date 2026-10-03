@@ -78,8 +78,11 @@ RECOVERY_KEYWORDS = CONNECTION_OK_KEYWORDS + [
     "重连成功",
     "重新连接",
 ]
-SUBTASK_ERROR_KEYWORDS = ["任务出错", "任务异常", "执行异常", "子任务"]
-IGNORE_ERROR_KEYWORDS = ["FPS", "补帧", "画面"]
+SUBTASK_ERROR_KEYWORDS = [
+    "任务出错", "任务异常", "执行异常", "子任务",
+    "识别错误", "出现错误", "仓库识别", "已返回",
+]
+IGNORE_ERROR_KEYWORDS = ["FPS", "补帧", "画面", "本轮任务出现以下错误"]
 
 
 def _group_lines(items: list[Any]) -> list[str]:
@@ -206,8 +209,11 @@ class MaaLogMonitor:
 
         - A connection failure is ignored when MAA later reconnects or starts a
           task, so a transient emulator drop that MAA retries past is not fatal.
-        - Task-level lines like 「任务出错：仓库识别」 are sub-task warnings, not
-          fatal errors (mirrors the MaaEnd report's 子任务报错 handling).
+        - Sub-task lines like 「任务出错：仓库识别」 / 「识别错误，已返回」 are
+          warnings, not fatal errors (mirrors the MaaEnd report's 子任务报错
+          handling).
+        - The completion line 「任务已完成，但出现错误！」 is a completion signal,
+          not an error — a hiccup sub-task still lets the queue finish.
         """
         completed = any(any(k in ln for k in COMPLETE_KEYWORDS) for ln in self.logs)
         recovery_positions = [
@@ -221,6 +227,8 @@ class MaaLogMonitor:
             if not any(k in ln for k in ERROR_KEYWORDS):
                 continue
             if any(ig in ln for ig in IGNORE_ERROR_KEYWORDS):
+                continue
+            if any(k in ln for k in COMPLETE_KEYWORDS):
                 continue
             if any(k in ln for k in SUBTASK_ERROR_KEYWORDS):
                 warnings.append(ln)
