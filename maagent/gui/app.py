@@ -1254,6 +1254,10 @@ class MaAgentWindow(QMainWindow):
         self.hotkeys.register("stop", str(hotkeys.get("stop", DEFAULT_HOTKEYS["stop"])))
 
     def _on_hotkey(self, name: str) -> None:
+        # 只有窗口在前台/打开时才响应热键；最小化到托盘或任务栏后忽略，仅按定时执行。
+        if not self.isVisible() or self.isMinimized():
+            logger.debug("快捷键：窗口未在前台（已最小化），忽略")
+            return
         if name == "start":
             self.hotkey_start()
         elif name == "stop":
