@@ -258,7 +258,9 @@ class Orchestrator(BaseWorkflow):
             logmon.wait_idle(timeout=wf.get("emulator_wait_timeout", 180), interval=3.0)
 
         start_timeout = wf.get("start_timeout", 90)
-        hotkey_timeout = min(20, start_timeout)
+        # MAA 启动模拟器通常要 20~30 秒（卡顿时更久），热键等待时间要给足，
+        # 否则会把尚未就绪的 MAA 误判为“热键未生效”，二次触发反而把它停掉。
+        hotkey_timeout = min(60, start_timeout)
         for attempt in range(1, 4):
             self._check_stop()
             monitor.scan_once()
@@ -269,8 +271,13 @@ class Orchestrator(BaseWorkflow):
                 ensure_visible(hwnd)
                 _force_foreground(hwnd)
                 time.sleep(0.6)
-            logger.info("触发 Link Start（第 {} 次）", attempt)
-            adapter.press_link_start()
+            # Link Start 是「开始/停止」切换键：MAA 已在运行（按钮显示「停止」）时
+            # 再按会把它停掉，所以只在确认空闲时才触发。
+            if logmon.button_state() == "running":
+                logger.info("MAA 已在运行，跳过再次触发 Link Start")
+            else:
+                logger.info("触发 Link Start（第 {} 次）", attempt)
+                adapter.press_link_start()
             if self._wait_started(logmon, monitor, hotkey_timeout):
                 return True
             # The hotkey may be unset/disabled in MAA; fall back to clicking the button.
