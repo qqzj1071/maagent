@@ -93,6 +93,22 @@ adapters:
     game_process: "Endfield.exe"
     game_start_timeout: 300     # 等待终末地进程启动并进入运行状态
     task_timeout_seconds: 3600  # 等待任务结束（进程退出）的上限
+  bgi:
+    enabled: true
+    path: "D:/tools/BetterGI"
+    executable: "D:/tools/BetterGI/BetterGI.exe"
+    wait_seconds: 40            # 启动后等待主窗口的时间
+    auto_close: true            # 任务完成并发送报告后自动关闭 BetterGI（原神由 BetterGI 关闭）
+    log_dir: "D:/tools/BetterGI/log"          # 主日志 / ExecutionRecords 所在目录
+    start_click_timeout: 60     # 点击「启动」按钮的重试窗口
+    game_start_timeout: 300     # 等待原神进程（YuanShen.exe / GenshinImpact.exe）启动
+    one_dragon_timeout: 40      # 点击左侧「一条龙」栏目的重试窗口
+    task_start_timeout: 40      # 点击任务列表右侧「开始」三角的重试窗口
+    task_timeout_seconds: 3600  # 等待一条龙任务结束的上限
+    regions:                    # OCR/点击的分数式区域（相对窗口宽高），可按需微调
+      start: [0.45, 0.0, 1.0, 1.0]        # 首页「启动」按钮搜索区域（右侧，避开左侧边栏同名导航项）
+      one_dragon: [0.0, 0.0, 0.40, 1.0]  # 左侧「一条龙」栏目搜索区域
+      task_start: [0.34, 0.09, 0.43, 0.17]  # 一条龙页面顶部「开始」三角按钮区域（实机确认约 0.386,0.129）
 
 agent:                            # 对话式 agent（OpenAI 兼容接口）
   enabled: false                  # 预留：GUI/手机端是否展示对话入口

@@ -3,9 +3,9 @@ from __future__ import annotations
 from typing import Any
 from uuid import uuid4
 
-CHAIN_SOFTWARE = ("maa", "maaend")
+CHAIN_SOFTWARE = ("maa", "maaend", "bgi")
 ALL_DAYS = list(range(7))
-SOFTWARE_LABELS = {"maa": "MAA", "maaend": "MaaEnd"}
+SOFTWARE_LABELS = {"maa": "MAA", "maaend": "MaaEnd", "bgi": "BetterGI"}
 
 
 def software_label(key: str) -> str:

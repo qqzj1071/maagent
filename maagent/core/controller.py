@@ -10,6 +10,7 @@ from typing import Any, Callable
 from loguru import logger
 
 from maagent.core.base import now_str
+from maagent.core.bettergi import BetterGiOrchestrator
 from maagent.core.maaend import MaaEndOrchestrator
 from maagent.core.orchestrator import Orchestrator
 from maagent.core.workflow_config import software_label
@@ -18,6 +19,12 @@ from maagent.report.generator import RunReport
 MAX_REPORTS = 200
 MAX_LOG_LINES = 500
 LOG_SEP = "\x1f"
+
+_RUNNERS = {
+    "maa": Orchestrator,
+    "maaend": MaaEndOrchestrator,
+    "bgi": BetterGiOrchestrator,
+}
 
 
 def report_to_dict(report: RunReport) -> dict[str, Any]:
@@ -202,7 +209,7 @@ class WorkflowController:
                     self._message = f"正在执行 {software_label(software)} ({index}/{total})"
                 self._emit_status()
                 logger.info("=== 远程工作流 {}/{}: {} ===", index, total, software)
-                runner_cls = MaaEndOrchestrator if software == "maaend" else Orchestrator
+                runner_cls = _RUNNERS.get(software, Orchestrator)
                 runner = runner_cls(self.config, stop_event=self._stop_event)
                 report = runner.run_daily()
                 self._append_report(report)
