@@ -79,6 +79,18 @@ class BetterGiUI:
     def __init__(self, process_name: str = PROCESS_NAME, cfg: dict | None = None) -> None:
         self.process_name = process_name
         self.cfg = cfg or {}
+        debug_dir = self.cfg.get("debug_dir") or "logs/popups"
+        from pathlib import Path
+
+        self.debug_dir = Path(debug_dir)
+
+    def _save_debug(self, img, tag: str) -> None:
+        """OCR 失败时保存截图，便于排查窗口内容/置前问题。"""
+        try:
+            self.debug_dir.mkdir(parents=True, exist_ok=True)
+            img.save(self.debug_dir / f"bgi_{tag}_{int(time.time())}.png")
+        except Exception:
+            pass
 
     def hwnd(self) -> int | None:
         return main_window(self.process_name)
@@ -107,6 +119,8 @@ class BetterGiUI:
 
     def capture(self, hwnd: int) -> Image.Image | None:
         self.foreground(hwnd)
+        # 置前后稍作停留，确保窗口完成绘制，避免抓到未渲染完成的画面
+        time.sleep(0.5)
         return capture_window_screen(hwnd)
 
     def click_label(self, labels: tuple[str, ...], region_key: str, exact: bool = False) -> bool:
@@ -120,15 +134,19 @@ class BetterGiUI:
                 return False
             region = region_for(self.cfg, region_key)
             l, t, r, b = crop_region(img, region)
-            items = recognize(img.crop((l, t, r, b)))
+            # 关键：OCR 整张窗口再按区域筛选。rapidocr 对裁剪后的子图会漏检大号按钮
+            # 文字（如首页的「启动」按钮），整图识别则稳定得多。
+            items = recognize(img)
+            items = [it for it in items if l <= it.center[0] <= r and t <= it.center[1] <= b]
             item = _find_item(items, labels, exact=exact)
             if item is None:
                 logger.debug("BetterGI：区域内未识别到标签 {} ({})", labels, region_key)
+                self._save_debug(img, region_key)
                 return False
             # 点击前再次置前，避免截图后到点击之间原神抢回前台导致点空
             self.foreground(hwnd)
             wx, wy, _, _ = win32gui.GetWindowRect(hwnd)
-            _click_screen(wx + l + item.center[0], wy + t + item.center[1])
+            _click_screen(wx + item.center[0], wy + item.center[1])
             logger.info("BetterGI：已点击「{}」", item.text)
             return True
         except Exception as e:
@@ -146,13 +164,14 @@ class BetterGiUI:
                 return False
             region = region_for(self.cfg, "task_start")
             l, t, r, b = crop_region(img, region)
-            items = recognize(img.crop((l, t, r, b)))
+            items = recognize(img)
+            items = [it for it in items if l <= it.center[0] <= r and t <= it.center[1] <= b]
             item = _find_item(items, TASK_START_LABELS)
             # 点击前再次置前，确保点落在 BetterGI 上
             self.foreground(hwnd)
             wx, wy, _, _ = win32gui.GetWindowRect(hwnd)
             if item is not None:
-                _click_screen(wx + l + item.center[0], wy + t + item.center[1])
+                _click_screen(wx + item.center[0], wy + item.center[1])
                 logger.info("BetterGI：已点击任务开始按钮「{}」", item.text)
             else:
                 cx = wx + l + (r - l) // 2
