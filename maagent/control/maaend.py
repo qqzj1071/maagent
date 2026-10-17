@@ -18,7 +18,10 @@ from maagent.control.popup import (
 )
 
 PROCESS_NAME = "MaaEnd.exe"
+# 终末地（Endfield）由 MaaEnd 的 MXU_KILLPROC 任务自动关闭，maagent 无需处理。
 GAME_PROCESS = "Endfield.exe"
+# 鹰角启动器（Hypergryph Launcher）的进程名；日常结束后与 MaaEnd 一起由 maagent 关闭。
+LAUNCHER_PROCESS = "Games.exe"
 
 # MaaEnd global hotkeys (config/mxu-MaaEnd.json -> settings.hotkeys)
 START_HOTKEY = "F10"

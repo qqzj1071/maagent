@@ -11,7 +11,7 @@ from typing import Any
 from loguru import logger
 
 from maagent.control.maaend import (
-    GAME_PROCESS,
+    LAUNCHER_PROCESS,
     PROCESS_NAME,
     START_HOTKEY,
     STOP_HOTKEY,
@@ -113,9 +113,11 @@ class MaaEndOrchestrator(BaseWorkflow):
         return bool(self.cfg.get("auto_close", False))
 
     def _auto_close(self) -> None:
-        logger.info("任务完成，关闭 MaaEnd 与终末地")
+        # 终末地（Endfield）由 MaaEnd 自身的 MXU_KILLPROC 任务自动关闭，这里只关
+        # MaaEnd 与鹰角启动器。
+        logger.info("任务完成，关闭 MaaEnd 与鹰角启动器")
         close_maa(PROCESS_NAME)
-        close_maa(GAME_PROCESS)
+        close_maa(LAUNCHER_PROCESS)
 
     def _api(self) -> MaaEndApi:
         return MaaEndApi(port=int(self.cfg.get("web_port", DEFAULT_PORT)))
