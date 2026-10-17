@@ -1,15 +1,17 @@
 from __future__ import annotations
 
+import ctypes
 import os
 import subprocess
 import sys
 import threading
+from ctypes import wintypes
 from datetime import datetime
 from pathlib import Path
 
 import yaml
 from loguru import logger
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import QAbstractNativeEventFilter, Qt, QTimer
 from PySide6.QtGui import QColor, QIcon, QPalette
 from PySide6.QtWidgets import (
     QApplication,
@@ -31,9 +33,12 @@ from PySide6.QtWidgets import (
 
 from maagent.config import load_config
 from maagent.control.autostart import set_enabled as set_autostart
+from maagent.control.bettergi import PROCESS_NAME as BGI_PROCESS
+from maagent.control.maaend import LAUNCHER_PROCESS as MAEND_LAUNCHER, PROCESS_NAME as MAEND_PROCESS
 from maagent.control.monthly import MonthlyState
-from maagent.control.process import close_all
+from maagent.control.process import close_all, close_maa
 from maagent.control.game_time import game_weekday
+from maagent.control import single_instance
 from maagent.control.weekly import WEEKDAY_NAMES, WeeklyState
 from maagent.core import workflow_config as wc
 from maagent.core.controller import WorkflowController
@@ -62,6 +67,17 @@ from maagent.gui.workflow import WorkflowPanel
 from maagent.i18n import DEFAULT_LANGUAGE, set_language, t
 from maagent.log.logger import setup_logger
 
+_CLOSE_BUTTON_KEYS = {
+    "maa": "btn.close_all",
+    "maaend": "btn.close_maaend",
+    "bgi": "btn.close_bgi",
+}
+_CLOSE_STATUS_KEYS = {
+    "maa": "status.closed_all",
+    "maaend": "status.closed_maaend",
+    "bgi": "status.closed_bgi",
+}
+
 LIGHT_QSS = """
 QWidget { font-size: 14px; }
 QMainWindow, QWidget#Central { background: #ffffff; }
@@ -71,8 +87,8 @@ QLabel#StatusLabel { color: #57606a; font-size: 14px; }
 
 QFrame#Card { background: #ffffff; border: 1px solid #e5e7eb; border-radius: 10px; }
 QFrame#Card:hover { border-color: #c7d2fe; background: #f8faff; }
-QFrame#Card[selected="true"] { border: 2px solid #4f46e5; background: #eef2ff; }
 QFrame#Card[inactive="true"] { background: #fafafa; border-color: #eceff3; }
+QFrame#Card[selected="true"] { border: 2px solid #4f46e5; background: #eef2ff; }
 QLabel#CardName { font-size: 15px; font-weight: 700; color: #111827; }
 QLabel#CardDesc { font-size: 12px; color: #6b7280; }
 QLabel#CardState { font-size: 11px; }
@@ -163,8 +179,8 @@ QLabel#StatusLabel { color: #cbd5e1; font-size: 14px; }
 
 QFrame#Card { background: #26262e; border: 1px solid #3a3a45; border-radius: 10px; }
 QFrame#Card:hover { border-color: #6366f1; background: #2c2c3a; }
-QFrame#Card[selected="true"] { border: 2px solid #6366f1; background: #2f2f45; }
 QFrame#Card[inactive="true"] { background: #22222a; border-color: #33333d; }
+QFrame#Card[selected="true"] { border: 2px solid #6366f1; background: #2f2f45; }
 QLabel#CardName { font-size: 15px; font-weight: 700; color: #f3f4f6; }
 QLabel#CardDesc { font-size: 12px; color: #9ca3af; }
 QLabel#CardState { font-size: 11px; }
@@ -356,7 +372,7 @@ class MaAgentWindow(QMainWindow):
         adapters = self.config.get("adapters", {}) or {}
         meta = software_meta()
         keys = list(meta.keys())
-        keys += [k for k in adapters if k not in keys and k != "bgi"]
+        keys += [k for k in adapters if k not in keys]
         defs = []
         for key in keys:
             name, desc = meta.get(key, (key.upper(), ""))
@@ -618,6 +634,27 @@ class MaAgentWindow(QMainWindow):
         self.maaend_auto_close_row.setVisible(False)
         bottom.addWidget(self.maaend_auto_close_row)
 
+        self.bgi_auto_close_row = QWidget()
+        bgi_row_layout = QHBoxLayout(self.bgi_auto_close_row)
+        bgi_row_layout.setContentsMargins(0, 0, 0, 0)
+        bgi_row_layout.setSpacing(8)
+        self.bgi_auto_close_label = QLabel(t("option.bgi_auto_close"))
+        self.bgi_auto_close_label.setObjectName("OptionLabel")
+        bgi_row_layout.addWidget(self.bgi_auto_close_label)
+        self.bgi_auto_close_switch = ToggleSwitch(
+            bool(
+                (self.config.get("adapters", {}).get("bgi", {}) or {}).get(
+                    "auto_close", False
+                )
+            ),
+            width=38,
+            height=20,
+        )
+        self.bgi_auto_close_switch.toggled.connect(self.on_option_changed)
+        bgi_row_layout.addWidget(self.bgi_auto_close_switch)
+        self.bgi_auto_close_row.setVisible(False)
+        bottom.addWidget(self.bgi_auto_close_row)
+
         bottom.addStretch(1)
         self.btn_config = QPushButton(t("btn.open_config"))
         self.btn_config.clicked.connect(self.open_config_dir)
@@ -704,7 +741,10 @@ class MaAgentWindow(QMainWindow):
             self.maa_auto_close_row.setVisible(key == "maa")
         if hasattr(self, "maaend_auto_close_row"):
             self.maaend_auto_close_row.setVisible(key == "maaend")
+        if hasattr(self, "bgi_auto_close_row"):
+            self.bgi_auto_close_row.setVisible(key == "bgi")
         # 工作流界面用自己的「立即执行 / 停止」，底部的关闭与开始按钮无意义
+        self.btn_close.setText(t(_CLOSE_BUTTON_KEYS.get(key, "btn.close_all")))
         self.btn_close.setVisible(not is_workflow)
         self.btn_start.setVisible(not is_workflow)
 
@@ -874,6 +914,9 @@ class MaAgentWindow(QMainWindow):
         adapters = self.config.setdefault("adapters", {})
         adapters.setdefault("maaend", {})["auto_close"] = (
             self.maaend_auto_close_switch.isChecked()
+        )
+        adapters.setdefault("bgi", {})["auto_close"] = (
+            self.bgi_auto_close_switch.isChecked()
         )
         app_cfg = self.config.setdefault("app", {})
         app_cfg["minimize_to_tray"] = self.minimize_to_tray
@@ -1175,9 +1218,16 @@ class MaAgentWindow(QMainWindow):
         logger.info("报告已复制到剪贴板")
 
     def do_close_all(self) -> None:
-        emu = self.config.get("adapters", {}).get("maa", {}).get("emulator", {})
-        close_all(emu)
-        self.status_label.setText(t("status.closed_all"))
+        key = self.selected_software or "maa"
+        if key == "maaend":
+            close_maa(MAEND_PROCESS)
+            close_maa(MAEND_LAUNCHER)
+        elif key == "bgi":
+            close_maa(BGI_PROCESS)
+        else:
+            emu = self.config.get("adapters", {}).get("maa", {}).get("emulator", {})
+            close_all(emu)
+        self.status_label.setText(t(_CLOSE_STATUS_KEYS.get(key, "status.closed_all")))
 
     def open_config_dir(self) -> None:
         subprocess.Popen(["explorer", str(self.config_path.parent)])
@@ -1364,7 +1414,30 @@ class MaAgentWindow(QMainWindow):
         event.accept()
 
 
+class _SingleInstanceFilter(QAbstractNativeEventFilter):
+    """接收其它实例发来的 WM_MAAGENT_SHOW，把主窗口恢复到前台。"""
+
+    def __init__(self, callback) -> None:
+        super().__init__()
+        self._callback = callback
+
+    def nativeEventFilter(self, event_type, message):  # noqa: N802
+        try:
+            msg = ctypes.cast(int(message), ctypes.POINTER(wintypes.MSG)).contents
+        except Exception:
+            return False
+        if msg.message == single_instance.WM_MAAGENT_SHOW:
+            self._callback()
+        return False
+
+
 def main() -> int:
+    # 单实例保护：后台已运行时，把已运行窗口拉到前台并退出本次启动。
+    if not single_instance.acquire():
+        single_instance.notify_existing()
+        logger.info("检测到 maagent 已在后台运行，已唤起其窗口并退出")
+        return 0
+
     os.chdir(app_base_dir())
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
@@ -1388,6 +1461,7 @@ def main() -> int:
 
     win = MaAgentWindow(config, config_path, bridge)
     win.setWindowIcon(icon)
+    app.installNativeEventFilter(_SingleInstanceFilter(win.restore_window))
     win.show()
     return app.exec()
 
