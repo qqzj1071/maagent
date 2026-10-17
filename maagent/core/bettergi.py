@@ -15,6 +15,7 @@ from maagent.control.bettergi import (
     PROCESS_NAME,
     BetterGiUI,
 )
+from maagent.control.bgi_weekly import apply_weekly as apply_bgi_weekly
 from maagent.control.process import close_maa, process_running, spawn
 from maagent.core.base import BaseWorkflow
 from maagent.report.generator import RunReport
@@ -172,7 +173,10 @@ class BetterGiOrchestrator(BaseWorkflow):
             report.status = "failed"
             report.errors.append("未找到 BetterGI 主窗口")
             return
-        self._check_stop()
+        # BetterGI 首次启动需要数秒加载首页，稍等片刻再截图识别，避免抓到未渲染完成的画面
+        settle = float(cfg.get("settle_seconds", 8))
+        logger.info("BetterGI 主窗口已就绪，等待 {} 秒加载...", settle)
+        self._wait_stop(settle)
 
         logger.info("=== 原神 步骤 2/5: 点击「启动」拉起原神 ===")
         game_running = any(process_running(p) for p in GAME_PROCESSES)
@@ -190,6 +194,13 @@ class BetterGiOrchestrator(BaseWorkflow):
         self._check_stop()
 
         logger.info("=== 原神 步骤 3/5: 切换到「一条龙」并点击开始 ===")
+        # 周常：在点「一条龙」前按日程勾选/取消勾选各配置组（凌晨 4 点为游戏日分界）
+        try:
+            weekly_cfg = (cfg.get("weekly") or {})
+            apply_bgi_weekly(weekly_cfg)
+        except Exception as e:
+            logger.warning("原神周常处理异常: {}", e)
+        self._check_stop()
         if not self._click_one_dragon(float(cfg.get("one_dragon_timeout", 40))):
             report.status = "failed"
             report.errors.append("未能切换到「一条龙」栏目")
@@ -247,13 +258,28 @@ class BetterGiOrchestrator(BaseWorkflow):
             time.sleep(2.0)
         return False
 
+    def _wait_stop(self, seconds: float) -> None:
+        """睡眠 ``seconds`` 秒，期间持续响应停止请求。"""
+        deadline = time.time() + seconds
+        while time.time() < deadline:
+            self._check_stop()
+            time.sleep(min(1.0, max(0.0, deadline - time.time())))
+
     def _click_start_game(self, timeout: float) -> bool:
-        """点「启动」，随后原神进程应出现（含重试）。"""
+        """点「启动」并确认原神进程已拉起（点击后短暂观察，未拉起则重试）。"""
         deadline = time.time() + timeout
         while time.time() < deadline:
             self._check_stop()
-            if self._ui.click_start_game():
+            if any(process_running(p) for p in GAME_PROCESSES):
                 return True
+            if self._ui.click_start_game():
+                # 点击成功，给原神一点启动时间；若始终没起来则回到外层重新点
+                wait = time.time() + 15
+                while time.time() < wait:
+                    self._check_stop()
+                    if any(process_running(p) for p in GAME_PROCESSES):
+                        return True
+                    time.sleep(2.0)
             time.sleep(3.0)
         return False
 

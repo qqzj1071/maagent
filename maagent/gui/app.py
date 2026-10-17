@@ -34,6 +34,7 @@ from PySide6.QtWidgets import (
 from maagent.config import load_config
 from maagent.control.autostart import set_enabled as set_autostart
 from maagent.control.bettergi import PROCESS_NAME as BGI_PROCESS
+from maagent.control.bgi_weekly import groups_config as bgi_groups_config
 from maagent.control.maaend import LAUNCHER_PROCESS as MAEND_LAUNCHER, PROCESS_NAME as MAEND_PROCESS
 from maagent.control.monthly import MonthlyState
 from maagent.control.process import close_all, close_maa
@@ -544,29 +545,37 @@ class MaAgentWindow(QMainWindow):
             monthly_panel.add_widget(section)
         inner.addWidget(monthly_panel)
 
+        self.bgi_weekly_panel = Panel(t("panel.weekly"))
+        bgi_weekly_panel = self.bgi_weekly_panel
+        bgi_cfg = (self.config.get("adapters", {}) or {}).get("bgi", {}) or {}
+        bgi_weekly_cfg = bgi_cfg.get("weekly", {}) or {}
+        self.bgi_weekly_sections: dict[str, CollapsibleSection] = {}
+        self.bgi_weekly_status: dict[str, QLabel] = {}
+        self.bgi_weekly_day_buttons: dict[str, list[QPushButton]] = {}
+        for group in bgi_groups_config(bgi_weekly_cfg):
+            name = group["name"]
+            section = CollapsibleSection(name, enabled=bool(group.get("enabled", False)))
+            grid, buttons = self._build_day_grid(
+                set(group.get("days") or []), self.on_bgi_weekly_changed
+            )
+            section.add_layout(grid)
+            status = QLabel()
+            status.setObjectName("Hint")
+            status.setWordWrap(True)
+            section.add_widget(status)
+            section.enable_switch.toggled.connect(self.on_bgi_weekly_changed)
+            self.bgi_weekly_sections[name] = section
+            self.bgi_weekly_status[name] = status
+            self.bgi_weekly_day_buttons[name] = buttons
+            bgi_weekly_panel.add_widget(section)
+        inner.addWidget(bgi_weekly_panel)
+
         self.workflow_panel = WorkflowPanel(self.config)
         self.workflow_panel.changed.connect(self.on_workflow_changed)
         self.workflow_panel.run_requested.connect(self.on_run_requested)
         inner.addWidget(self.workflow_panel)
         inner.addStretch(1)
         left_col.addWidget(scroll, 1)
-
-        self.maa_auto_close_row = QWidget()
-        auto_row = QHBoxLayout(self.maa_auto_close_row)
-        auto_row.setContentsMargins(4, 0, 4, 0)
-        auto_row.setSpacing(8)
-        auto_label = QLabel(t("option.auto_close"))
-        auto_label.setObjectName("OptionLabel")
-        auto_row.addWidget(auto_label)
-        auto_row.addStretch(1)
-        self.auto_close_switch = ToggleSwitch(
-            bool((self.config.get("workflow") or {}).get("auto_close", False)),
-            width=38,
-            height=20,
-        )
-        self.auto_close_switch.toggled.connect(self.on_option_changed)
-        auto_row.addWidget(self.auto_close_switch)
-        left_col.addWidget(self.maa_auto_close_row)
 
         self.left_panel = QWidget()
         self.left_panel.setObjectName("LeftPanel")
@@ -575,6 +584,7 @@ class MaAgentWindow(QMainWindow):
         self.update_weekly_status()
         self.update_annihilation_status()
         self.update_monthly_status()
+        self.update_bgi_weekly_status()
         self.workflow_panel.refresh_status(self.scheduler)
 
         right_col = QVBoxLayout()
@@ -612,6 +622,23 @@ class MaAgentWindow(QMainWindow):
         self.status_label = QLabel(t("status.idle"))
         self.status_label.setObjectName("StatusLabel")
         bottom.addWidget(self.status_label)
+
+        self.maa_auto_close_row = QWidget()
+        auto_row = QHBoxLayout(self.maa_auto_close_row)
+        auto_row.setContentsMargins(0, 0, 0, 0)
+        auto_row.setSpacing(8)
+        auto_label = QLabel(t("option.auto_close"))
+        auto_label.setObjectName("OptionLabel")
+        auto_row.addWidget(auto_label)
+        self.auto_close_switch = ToggleSwitch(
+            bool((self.config.get("workflow") or {}).get("auto_close", False)),
+            width=38,
+            height=20,
+        )
+        self.auto_close_switch.toggled.connect(self.on_option_changed)
+        auto_row.addWidget(self.auto_close_switch)
+        self.maa_auto_close_row.setVisible(False)
+        bottom.addWidget(self.maa_auto_close_row)
 
         self.maaend_auto_close_row = QWidget()
         maaend_row_layout = QHBoxLayout(self.maaend_auto_close_row)
@@ -730,13 +757,14 @@ class MaAgentWindow(QMainWindow):
         self.selected_software = key
         for card_key, card in self.cards.items():
             card.set_selected(card_key == key)
-        # 周常/月常 只对 MAA 有意义；日常工作流 有独立的编排面板
+        # 周常/月常 只对 MAA 有意义；原神周常对 BetterGI 有意义；日常工作流 有独立的编排面板
         is_maa = key == "maa"
         is_workflow = key == WORKFLOW_KEY
         self.weekly_panel.setVisible(is_maa)
         self.monthly_panel.setVisible(is_maa)
         self.workflow_panel.setVisible(is_workflow)
-        self.left_panel.setVisible(key in ("maa", WORKFLOW_KEY))
+        self.bgi_weekly_panel.setVisible(key == "bgi")
+        self.left_panel.setVisible(key in ("maa", "bgi", WORKFLOW_KEY))
         if hasattr(self, "maa_auto_close_row"):
             self.maa_auto_close_row.setVisible(key == "maa")
         if hasattr(self, "maaend_auto_close_row"):
@@ -894,6 +922,25 @@ class MaAgentWindow(QMainWindow):
     def on_option_changed(self) -> None:
         self.save_timer.start()
 
+    def update_bgi_weekly_status(self) -> None:
+        today = game_weekday()
+        for name, section in self.bgi_weekly_sections.items():
+            status = self.bgi_weekly_status.get(name)
+            buttons = self.bgi_weekly_day_buttons.get(name)
+            if status is None or buttons is None:
+                continue
+            if not section.is_enabled():
+                status.setText(f"{name}：已停用 → 始终取消勾选")
+                continue
+            days = [i for i, btn in enumerate(buttons) if btn.isChecked()]
+            names = "、".join(WEEKDAY_NAMES[i] for i in days) or "（未选择）"
+            action = "勾选" if today in days else "取消勾选"
+            status.setText(f"{name}：{names}\n今天 {WEEKDAY_NAMES[today]} → 自动{action}")
+
+    def on_bgi_weekly_changed(self, _index: int | None = None) -> None:
+        self.update_bgi_weekly_status()
+        self.save_timer.start()
+
     def save_settings(self) -> None:
         weekly = self.config.setdefault("weekly", {})
         weekly["enabled"] = True
@@ -918,6 +965,24 @@ class MaAgentWindow(QMainWindow):
         adapters.setdefault("bgi", {})["auto_close"] = (
             self.bgi_auto_close_switch.isChecked()
         )
+        bgi = adapters.setdefault("bgi", {})
+        bgi_weekly = bgi.setdefault("weekly", {})
+        bgi_weekly["enabled"] = True
+        bgi_weekly.setdefault(
+            "one_dragon_config", "D:/tools/BetterGI/User/OneDragon/默认配置.json"
+        )
+        bgi_weekly["groups"] = [
+            {
+                "name": name,
+                "enabled": section.is_enabled(),
+                "days": [
+                    i
+                    for i, btn in enumerate(self.bgi_weekly_day_buttons.get(name, []))
+                    if btn.isChecked()
+                ],
+            }
+            for name, section in self.bgi_weekly_sections.items()
+        ]
         app_cfg = self.config.setdefault("app", {})
         app_cfg["minimize_to_tray"] = self.minimize_to_tray
         try:
