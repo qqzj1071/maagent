@@ -85,7 +85,9 @@ class WorkflowController:
     # software resolution
     # ------------------------------------------------------------------ #
     def _software_enabled(self, key: str) -> bool:
-        return bool((self.config.get("adapters", {}) or {}).get(key, {}).get("enabled", False))
+        return key in _RUNNERS and bool(
+            (self.config.get("adapters", {}) or {}).get(key, {}).get("enabled", False)
+        )
 
     def resolve_software_list(self) -> list[str]:
         chain = (self.config.get("workflow", {}) or {}).get("chain", {}) or {}
@@ -117,7 +119,7 @@ class WorkflowController:
             if not isinstance(task, dict):
                 continue
             software = task.get("software")
-            if not software or software in seen:
+            if software not in _RUNNERS or software in seen:
                 continue
             seen.add(software)
             items.append(
@@ -125,8 +127,13 @@ class WorkflowController:
                     "software": software,
                     "name": software_label(software),
                     "enabled": bool(task.get("enabled", True)) and self._software_enabled(software),
+                    "can_start": self._software_enabled(software),
                 }
             )
+        for software in _RUNNERS:
+            if software not in seen:
+                items.append({"software": software, "name": software_label(software),
+                              "enabled": False, "can_start": self._software_enabled(software)})
         return items
 
     # ------------------------------------------------------------------ #
@@ -162,7 +169,7 @@ class WorkflowController:
         with self._lock:
             if self._running:
                 raise RuntimeError("已有任务正在运行")
-            if software_list:
+            if software_list is not None:
                 requested = [str(s) for s in software_list]
             else:
                 requested = self.resolve_software_list()
@@ -209,7 +216,7 @@ class WorkflowController:
                     self._message = f"正在执行 {software_label(software)} ({index}/{total})"
                 self._emit_status()
                 logger.info("=== 远程工作流 {}/{}: {} ===", index, total, software)
-                runner_cls = _RUNNERS.get(software, Orchestrator)
+                runner_cls = _RUNNERS[software]
                 runner = runner_cls(self.config, stop_event=self._stop_event)
                 report = runner.run_daily()
                 self._append_report(report)
@@ -232,19 +239,19 @@ class WorkflowController:
     def _load_reports(self) -> list[dict[str, Any]]:
         if not self.report_file.exists():
             return []
-        reports: list[dict[str, Any]] = []
+        reports: deque[dict[str, Any]] = deque(maxlen=MAX_REPORTS)
         try:
-            for line in self.report_file.read_text(encoding="utf-8").splitlines():
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    reports.append(json.loads(line))
-                except ValueError:
-                    continue
+            with self.report_file.open(encoding="utf-8") as stream:
+                for line in stream:
+                    try:
+                        report = json.loads(line)
+                    except ValueError:
+                        continue
+                    if isinstance(report, dict):
+                        reports.append(report)
         except OSError:
             return []
-        return reports[-MAX_REPORTS:]
+        return list(reports)
 
     def _append_report(self, report: RunReport) -> None:
         data = report_to_dict(report)
@@ -290,14 +297,15 @@ class WorkflowController:
     # ------------------------------------------------------------------ #
     def on_log(self, message: Any) -> None:
         try:
-            parts = str(message).split(LOG_SEP)
+            parts = str(message).split(LOG_SEP, 2)
             time_part = parts[0] if parts else ""
             level = parts[1] if len(parts) > 1 else "INFO"
             text = parts[2] if len(parts) > 2 else str(message)
         except Exception:
             time_part, level, text = "", "INFO", str(message)
         entry = {"time": time_part, "level": level, "message": text}
-        self._log_lines.append(entry)
+        with self._lock:
+            self._log_lines.append(entry)
         self._emit({"type": "log", "data": entry})
 
     def logs(self, limit: int = 200) -> list[dict[str, str]]:

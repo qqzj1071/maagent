@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import queue
 import re
+import threading
 import urllib.parse
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler
@@ -335,7 +336,7 @@ def workflow_start(ctx: ServerContext, req: Request) -> tuple[int, dict[str, Any
     if software is not None and not isinstance(software, list):
         raise ApiError(400, "bad_request", "software 必须是数组")
     try:
-        ctx.controller.start([str(s) for s in software] if software else None)
+        ctx.controller.start([str(s) for s in software] if software is not None else None)
     except RuntimeError as e:
         raise ApiError(409, "busy", str(e)) from e
     return 200, {"ok": True, "status": _control_payload(ctx)}
@@ -437,6 +438,7 @@ class ApiHandler(BaseHTTPRequestHandler):
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
         self.send_header("Content-Length", str(len(body)))
         self._cors()
         self.end_headers()
@@ -445,6 +447,7 @@ class ApiHandler(BaseHTTPRequestHandler):
     def _send_bytes(self, status: int, body: bytes, content_type: str) -> None:
         self.send_response(status)
         self.send_header("Content-Type", content_type)
+        self.send_header("Cache-Control", "no-cache")
         self.send_header("Content-Length", str(len(body)))
         self._cors()
         self.end_headers()
@@ -520,26 +523,32 @@ class ApiHandler(BaseHTTPRequestHandler):
             self._send_json(403, {"ok": False, "error": "forbidden", "message": "账号不可用"})
             return
 
-        events: queue.Queue[dict[str, Any]] = queue.Queue()
+        events: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=256)
+        overflow = threading.Event()
 
         def on_event(event: dict[str, Any]) -> None:
-            events.put(event)
+            try:
+                events.put_nowait(event)
+            except queue.Full:
+                overflow.set()
 
         ctx.controller.subscribe(on_event)
-        self.send_response(200)
-        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
-        self.send_header("Cache-Control", "no-cache")
-        self.send_header("X-Accel-Buffering", "no")
-        self._cors()
-        self.end_headers()
         try:
+            self.connection.settimeout(30)
+            self.close_connection = True
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+            self.send_header("Cache-Control", "no-cache, no-transform")
+            self.send_header("Connection", "close")
+            self.send_header("X-Accel-Buffering", "no")
+            self._cors()
+            self.end_headers()
             self._sse_send({"type": "snapshot", "data": _control_payload(ctx)})
-            while True:
+            while not overflow.is_set():
                 try:
-                    event = events.get(timeout=20)
+                    event = events.get(timeout=15)
                 except queue.Empty:
-                    self.wfile.write(b": ping\n\n")
-                    self.wfile.flush()
+                    self._sse_send({"type": "heartbeat"})
                     continue
                 self._sse_send(event)
         except (BrokenPipeError, ConnectionResetError, OSError):

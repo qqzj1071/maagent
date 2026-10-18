@@ -9,8 +9,7 @@ from typing import Any
 from loguru import logger
 
 from maagent.control.game_time import game_day_key, game_weekday
-
-ALL_DAYS = [0, 1, 2, 3, 4, 5, 6]
+from maagent.core.workflow_config import ALL_DAYS, CHAIN_SOFTWARE, legacy_split
 
 MODE_SEQUENTIAL = "sequential"
 MODE_SCHEDULED = "scheduled"
@@ -95,19 +94,7 @@ class Scheduler:
         sequential = chain.get("sequential_tasks")
         scheduled = chain.get("scheduled_tasks")
         if sequential is None or scheduled is None:
-            seq: list[dict[str, Any]] = []
-            sched: list[dict[str, Any]] = []
-            seen: set[str] = set()
-            for item in chain.get("tasks") or []:
-                if not isinstance(item, dict) or not item.get("software"):
-                    continue
-                sched.append(item)
-                key = item["software"]
-                if key not in seen:
-                    seen.add(key)
-                    seq.append(
-                        {"id": item.get("id"), "software": key, "enabled": item.get("enabled", True)}
-                    )
+            seq, sched = legacy_split(chain)
             if sequential is None:
                 sequential = seq
             if scheduled is None:
@@ -117,7 +104,7 @@ class Scheduler:
     def tasks(self) -> list[dict[str, Any]]:
         sequential, scheduled = self._task_lists()
         source = scheduled if self.mode() == MODE_SCHEDULED else sequential
-        return [t for t in source if isinstance(t, dict) and t.get("software")]
+        return [t for t in source if isinstance(t, dict) and t.get("software") in CHAIN_SOFTWARE]
 
     def enabled_tasks(self) -> list[dict[str, Any]]:
         return [t for t in self.tasks() if t.get("enabled", True)]

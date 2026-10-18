@@ -82,18 +82,22 @@
       <button class="tab" data-tab="logs" type="button">日志</button>
       <button class="tab" data-tab="reports" type="button">报告</button>
     </nav>
+    <div class="connection" role="status" aria-live="polite">
+      <span id="connectionText">正在连接电脑…</span>
+      <button id="retryBtn" class="ghost small" type="button">重新连接</button>
+    </div>
     <main>
       <div id="tab-status" class="panel">
         <div class="card">
           <div class="status-line">
             <span id="statusDot" class="dot"></span>
-            <span id="statusText">空闲</span>
+            <span id="statusText">等待同步</span>
           </div>
           <div class="muted" id="statusMessage"></div>
           <dl class="kv" id="statusKv"></dl>
         </div>
         <div class="actions">
-          <button id="startBtn" class="primary" type="button">启动日常</button>
+          <button id="startBtn" class="primary" type="button" disabled>启动日常</button>
           <button id="stopBtn" class="danger" type="button" disabled>停止</button>
         </div>
         <h3 class="section-title">任务清单</h3>
@@ -108,7 +112,7 @@
         <div class="panel-actions">
           <button id="clearReportsBtn" class="ghost small" type="button">清空报告</button>
         </div>
-        <div id="reportList" class="list"></div>
+        <div id="reportList" class="list reports-frame"></div>
       </div>
     </main>
   </section>

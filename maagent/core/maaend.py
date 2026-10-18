@@ -32,13 +32,12 @@ ERROR_KEYWORDS = ("失败", "错误", "异常", "出错", "无法", "超时")
 # ``is_running`` flag can lag or be missing right after an auto-update, so we
 # detect the running state from the log too — mirrors MAA's log-based checks).
 RUNNING_MARKERS = ("任务已提交", "开始执行任务", "任务已在运行")
-DONE_MARKERS = ("全部完成", "任务已完成", "任务结束")
+DONE_MARKERS = ("全部完成", "任务全部完成", "所有任务已完成", "所有任务完成", "全部任务已完成", "全部任务完成", "任务已全部完成", "任务已完成", "任务结束")
 
 
 def _is_done_message(message: str) -> bool:
-    return any(k in message for k in DONE_MARKERS) or (
-        "结束进程" in message and "完成" in message
-    )
+    # 子任务也会输出“售卖任务已完成”，只能匹配整条队列结束通知。
+    return message.strip().rstrip("。！!.").strip() in DONE_MARKERS
 
 # 终末地理智：7 分 12 秒恢复 1 点（24 小时 200 点）
 SANITY_RECOVER_SECONDS = 7 * 60 + 12
@@ -102,6 +101,7 @@ class MaaEndOrchestrator(BaseWorkflow):
         super().__init__(config, stop_event)
         self.cfg = (config.get("adapters", {}) or {}).get("maaend", {}) or {}
         self._popup_monitor: MaaPopupMonitor | None = None
+        self._completion_confirmed = False
 
     def _game_name(self) -> str:
         return GAME_NAME
@@ -110,7 +110,7 @@ class MaaEndOrchestrator(BaseWorkflow):
         self._stop_task()
 
     def _auto_close_enabled(self) -> bool:
-        return bool(self.cfg.get("auto_close", False))
+        return self._completion_confirmed and bool(self.cfg.get("auto_close", False))
 
     def _auto_close(self) -> None:
         # 终末地（Endfield）由 MaaEnd 自身的 MXU_KILLPROC 任务自动关闭，这里只关
@@ -125,6 +125,7 @@ class MaaEndOrchestrator(BaseWorkflow):
     # ------------------------------------------------------------------ #
     def _run(self, report: RunReport) -> None:
         cfg = self.cfg
+        self._completion_confirmed = False
         logger.info("=== 终末地 步骤 1/5: 打开 MaaEnd ===")
         launched = not process_running(PROCESS_NAME)
         launch_time = time.time()
@@ -169,6 +170,9 @@ class MaaEndOrchestrator(BaseWorkflow):
             float(cfg.get("game_start_timeout", 300)),
             float(cfg.get("task_timeout_seconds", 3600)),
         )
+        self._completion_confirmed = result == "complete"
+        if not self._completion_confirmed:
+            logger.warning("终末地：未确认整套任务完成，保留 MaaEnd 窗口，不自动关闭")
 
         logger.info("=== 终末地 步骤 4/5: 汇总日志并生成报告 ===")
         time.sleep(2)
@@ -330,19 +334,17 @@ class MaaEndOrchestrator(BaseWorkflow):
             self._check_stop()
             self._dismiss_popups()
             messages = self._new_messages(api, instance_id, since)
-            if any(_is_done_message(m) for m in messages):
-                logger.info("终末地：任务已结束")
-                return "complete"
-            if any(any(k in m for k in RUNNING_MARKERS) for m in messages):
-                running = True
-                break
             try:
-                if api.is_running(instance_id):
-                    running = True
-                    saw_state_running = True
-                    break
+                state_running = api.is_running(instance_id)
             except Exception:
-                pass
+                state_running = None
+            if state_running is not True and self._queue_done(messages):
+                logger.info("终末地：整套任务完成通知已确认")
+                return "complete"
+            if state_running is True or any(any(k in m for k in RUNNING_MARKERS) for m in messages):
+                running = True
+                saw_state_running = state_running is True
+                break
             if time.time() >= next_retry:
                 # Only nudge while nothing proves the task was submitted — once it
                 # is running (or preparing), re-triggering only hurts.
@@ -357,20 +359,37 @@ class MaaEndOrchestrator(BaseWorkflow):
 
         logger.info("终末地：任务运行中，等待结束...")
         deadline = time.time() + timeout
+        idle_polls = 0
         while time.time() < deadline:
             self._check_stop()
             self._dismiss_popups()
-            if any(_is_done_message(m) for m in self._new_messages(api, instance_id, since)):
-                logger.info("终末地：任务已结束")
-                return "complete"
+            messages = self._new_messages(api, instance_id, since)
             try:
-                if saw_state_running and not api.is_running(instance_id):
-                    logger.info("终末地：任务已结束")
-                    return "complete"
+                state_running = api.is_running(instance_id)
             except Exception:
-                pass
+                state_running = None
+            if state_running is True:
+                saw_state_running = True
+            if state_running is not True and self._queue_done(messages):
+                logger.info("终末地：整套任务完成通知已确认")
+                return "complete"
+            # 缺字段、实例暂时消失或 API 异常不是空闲；短暂 false 也不算结束。
+            idle_polls = idle_polls + 1 if saw_state_running and state_running is False else 0
+            if idle_polls >= 3:
+                logger.info("终末地：运行状态连续三次为空闲，确认任务队列已结束")
+                return "complete"
             time.sleep(5.0)
         return "timeout"
+
+    @staticmethod
+    def _queue_done(messages: list[str]) -> bool:
+        """A later task start invalidates an earlier completion notification."""
+        for message in reversed(messages):
+            if message.startswith(("任务开始:", "任务开始：")) or any(k in message for k in RUNNING_MARKERS):
+                return False
+            if _is_done_message(message):
+                return True
+        return False
 
     def _dismiss_popups(self) -> None:
         """Dismiss MaaEnd popups (update prompts etc.) the same way we do for MAA."""

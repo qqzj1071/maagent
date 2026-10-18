@@ -1,8 +1,8 @@
 # maagent
 
-Windows-only desktop app that drives **MAA** (MaaAssistantArknights) to run
-Arknights dailies, auto-dismisses MAA popups via OCR, OCRs MAA's right-side log,
-and emails a concise daily report. Python 3.12 + PySide6, packaged with PyInstaller.
+Windows-only desktop app orchestrating **MAA**, **MaaEnd**, and **BetterGI**
+dailies, with scheduled workflows, email reports, and a built-in phone PWA.
+Python 3.12 + PySide6, packaged with PyInstaller.
 
 Full development workflow (layout, gotchas, exe build, proxy push) lives in the
 project skill: `.opencode/skills/maagent-dev/SKILL.md`.
@@ -16,6 +16,9 @@ project skill: `.opencode/skills/maagent-dev/SKILL.md`.
 - Close MAA + emulator: `.venv\Scripts\python.exe -m maagent.main --close`
 - Account / phone-web service (headless): `.venv\Scripts\python.exe -m maagent.main --config config/config.yaml --serve`
 - Verify imports: `.venv\Scripts\python.exe -c "import maagent.main, maagent.core.orchestrator, maagent.core.controller, maagent.core.scheduler, maagent.control.popup, maagent.control.logmonitor, maagent.server.app, maagent.server.accounts, maagent.gui.app; print('OK')"`
+- Offline regression tests: `.venv\Scripts\python.exe -m unittest discover -s tests -v`
+- Phone web logic tests (Node.js, no npm dependencies): `node --test tests/phone_web.test.cjs`
+- Review and handoff notes: `docs/development-review-2026-10-17.md`
 
 ## Rules
 
@@ -25,4 +28,9 @@ project skill: `.opencode/skills/maagent-dev/SKILL.md`.
   — they contain the QQ email authorization code. They are gitignored; keep it so.
 - Push through the local proxy (direct github.com:443 is blocked):
   `git -c http.proxy=http://127.0.0.1:7897 -c https.proxy=http://127.0.0.1:7897 push origin main`
-- No test suite yet (`tests/` is empty); verify by importing modules and a GUI/exe smoke test.
+- Run offline regression tests and module imports after runtime changes. Tests use
+  temporary files without launching games or sending email. GUI/exe and real-game
+  checks are separate; do not treat imports alone as end-to-end validation.
+- Use `maagent.release.spec` for release builds: it bundles clean installer config.
+  The older skill's inline build command embeds personal config and is unsuitable
+  for distributable releases.

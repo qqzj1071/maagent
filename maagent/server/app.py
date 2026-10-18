@@ -16,6 +16,7 @@ from maagent.server.net import detect_tailscale_ip
 class ApiServer(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
+    request_queue_size = 64
 
     def __init__(self, address: tuple[str, int], ctx: ServerContext) -> None:
         self.ctx = ctx

@@ -72,16 +72,22 @@ class LogTailer:
         self.log_dir = Path(log_dir) if log_dir else None
         self._file: Path | None = None
         self._pos = 0
+        self._pending = b""
         self._snap()
 
     def _newest(self) -> Path | None:
         if self.log_dir is None or not self.log_dir.is_dir():
             return None
-        files = sorted(
-            self.log_dir.glob("better-genshin-impact*.log"),
-            key=lambda p: p.stat().st_mtime,
-        )
-        return files[-1] if files else None
+        newest = None
+        newest_mtime = -1
+        for path in self.log_dir.glob("better-genshin-impact*.log"):
+            try:
+                mtime = path.stat().st_mtime_ns
+            except OSError:  # 文件可能在轮询期间被清理
+                continue
+            if mtime >= newest_mtime:
+                newest, newest_mtime = path, mtime
+        return newest
 
     def _snap(self) -> None:
         f = self._newest()
@@ -100,23 +106,29 @@ class LogTailer:
         if self._file is None or f != self._file:
             # 首次读取（此前无日志）或日志滚动到新文件：从文件头开始读
             self._file, self._pos = f, 0
+            self._pending = b""
         try:
             size = f.stat().st_size
         except OSError:
             return []
         if size < self._pos:
             self._pos = 0
+            self._pending = b""
         if size <= self._pos:
             return []
         try:
-            with open(f, "r", encoding="utf-8", errors="replace") as fh:
+            with open(f, "rb") as fh:
                 fh.seek(self._pos)
                 data = fh.read(size - self._pos)
-                self._pos = size
+                self._pos = fh.tell()
         except Exception as e:  # noqa: BLE001 - transient lock
             logger.debug("BetterGI：读取日志失败: {}", e)
             return []
-        return [ln for ln in data.splitlines() if ln.strip()]
+        # 保留尚未写完的行（也可能停在 UTF-8 字符中间），下次补齐后再解析。
+        lines = (self._pending + data).split(b"\n")
+        self._pending = lines.pop()
+        return [line.decode("utf-8", errors="replace").rstrip("\r")
+                for line in lines if line.strip()]
 
 
 class BetterGiOrchestrator(BaseWorkflow):

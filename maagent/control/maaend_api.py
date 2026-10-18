@@ -85,12 +85,12 @@ class MaaEndApi:
         return {}
 
     @staticmethod
-    def _is_running_flag(state: dict[str, Any]) -> bool:
+    def _is_running_flag(state: dict[str, Any]) -> bool | None:
         for key in ("is_running", "isRunning", "running"):
             value = state.get(key)
             if isinstance(value, bool):
                 return value
-        return False
+        return None
 
-    def is_running(self, instance_id: str | None = None) -> bool:
+    def is_running(self, instance_id: str | None = None) -> bool | None:
         return self._is_running_flag(self.instance_state(instance_id))

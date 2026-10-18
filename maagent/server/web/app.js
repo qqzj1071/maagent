@@ -11,6 +11,17 @@ let reports = [];
 let logLines = [];
 let es = null;
 let codeTimer = null;
+let session = 0;
+let statusReady = false;
+let actionPending = false;
+let activeTab = 'status';
+let lastEventAt = 0;
+let statusRequest = null;
+let panelRequest = null;
+let logRenderTimer = null;
+let statusRevision = 0;
+let panelRevision = 0;
+const panelLoaded = { logs: false, reports: false };
 
 const $ = (id) => document.getElementById(id);
 const el = (tag, cls, text) => {
@@ -29,27 +40,29 @@ function toast(message) {
 }
 
 async function api(path, { method = 'GET', body = null, auth = true } = {}) {
+  const requestToken = token;
   const headers = { 'Content-Type': 'application/json' };
   if (auth && token) headers['Authorization'] = 'Bearer ' + token;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 15000);
   let response;
+  let data;
   try {
     response = await fetch(API + path, {
       method,
       headers,
       body: body ? JSON.stringify(body) : undefined,
+      signal: controller.signal,
+      cache: 'no-store',
     });
+    data = await response.json();
   } catch (e) {
-    throw new Error('无法连接服务器');
-  }
-  const text = await response.text();
-  let data = {};
-  try {
-    data = text ? JSON.parse(text) : {};
-  } catch (e) {
-    data = {};
+    throw new Error(controller.signal.aborted ? '连接超时，请检查电脑和网络后重试' : '无法连接服务器，请检查电脑和网络');
+  } finally {
+    clearTimeout(timeout);
   }
   if (!response.ok) {
-    if (response.status === 401 && auth) logout(false);
+    if (response.status === 401 && auth && token === requestToken) logout(false);
     throw new Error(data.message || '请求失败（' + response.status + '）');
   }
   return data;
@@ -71,12 +84,14 @@ function showMain() {
 }
 
 function onLoggedIn(data) {
+  session += 1;
+  statusReady = false;
   token = data.token || '';
   account = data.account || {};
   localStorage.setItem(TOKEN_KEY, token);
   localStorage.setItem(EMAIL_KEY, accountName());
   showMain();
-  refreshAll();
+  refreshStatus();
   connectEvents();
 }
 
@@ -89,6 +104,16 @@ async function logout(callApi = true) {
     }
   }
   token = '';
+  session += 1;
+  statusReady = false;
+  statusData = {};
+  actionPending = false;
+  statusRequest = null;
+  panelRequest = null;
+  panelLoaded.logs = panelLoaded.reports = false;
+  reports = [];
+  setLogs([]);
+  renderReports();
   account = {};
   localStorage.removeItem(TOKEN_KEY);
   localStorage.removeItem(EMAIL_KEY);
@@ -206,6 +231,10 @@ document.querySelectorAll('[data-tab]').forEach((btn) => {
     ['status', 'logs', 'reports'].forEach((name) => {
       $('tab-' + name).classList.toggle('hidden', name !== btn.dataset.tab);
     });
+    activeTab = btn.dataset.tab;
+    if (activeTab === 'logs') renderLogs();
+    if (activeTab === 'reports') renderReports();
+    refreshPanel();
   });
 });
 
@@ -215,7 +244,7 @@ function renderStatus() {
   const running = !!data.running;
   const stopping = data.status === 'stopping';
   $('statusDot').className = 'dot' + (running ? (stopping ? ' stopping' : ' running') : '');
-  $('statusText').textContent = stopping ? '停止中' : running ? '运行中' : '空闲';
+  $('statusText').textContent = !statusReady ? '等待同步' : stopping ? '停止中' : running ? '运行中' : '空闲';
   $('statusMessage').textContent = data.message || '';
 
   const kv = $('statusKv');
@@ -232,8 +261,9 @@ function renderStatus() {
     kv.appendChild(row);
   });
 
-  $('startBtn').disabled = running;
-  $('stopBtn').disabled = !running;
+  const unavailable = !statusReady || actionPending || !navigator.onLine;
+  $('startBtn').disabled = unavailable || running || !(data.software || []).some((item) => item.enabled);
+  $('stopBtn').disabled = unavailable || !running || stopping;
 
   const list = $('softwareList');
   list.innerHTML = '';
@@ -242,57 +272,79 @@ function renderStatus() {
     list.appendChild(el('div', 'muted', '没有配置任务'));
   }
   software.forEach((item) => {
-    const node = el('div', 'item');
-    node.appendChild(el('div', 'line1', (item.name || item.software) + (item.enabled ? '' : '（已停用）')));
+    const node = el('div', 'item task-item');
+    const info = el('div');
+    const canStart = item.can_start == null ? item.enabled : item.can_start;
+    info.appendChild(el('div', 'line1', item.name || item.software));
+    info.appendChild(el('div', 'line2', !canStart ? '软件已停用，请在电脑端启用' : item.enabled ? '已加入日常序列' : '仅单独运行 · 未加入日常序列'));
+    node.appendChild(info);
+    const button = el('button', 'task-start small', running && data.current === item.software ? '运行中' : '单独启动');
+    button.type = 'button';
+    button.disabled = unavailable || running || !canStart;
+    button.setAttribute('aria-label', '单独启动 ' + (item.name || item.software));
+    button.addEventListener('click', () => runAction('/workflow/start', { software: [item.software] }));
+    node.appendChild(button);
     list.appendChild(node);
   });
 }
 
-function scheduleStatusRefreshes() {
-  [1200, 3000, 6000, 12000].forEach((delay) => setTimeout(refreshStatus, delay));
+async function runAction(path, body = null) {
+  if (actionPending || !statusReady) return;
+  const currentSession = session;
+  actionPending = true;
+  statusRevision += 1;
+  renderStatus();
+  try {
+    const revision = statusRevision;
+    const data = await api(path, { method: 'POST', body });
+    if (currentSession !== session) return;
+    if (data.status && revision === statusRevision) {
+      statusData = data.status;
+      renderStatus();
+    }
+  } catch (err) {
+    if (currentSession === session) {
+      statusReady = false;
+      toast(err.message + '；正在核实任务状态，请勿重复启动');
+    }
+  } finally {
+    if (currentSession === session) {
+      actionPending = false;
+      renderStatus();
+      refreshStatus();
+    }
+  }
 }
 
-$('startBtn').addEventListener('click', async () => {
-  try {
-    const data = await api('/workflow/start', { method: 'POST', body: {} });
-    if (data.status) {
-      statusData = data.status;
-      renderStatus();
-    }
-    scheduleStatusRefreshes();
-  } catch (err) {
-    toast(err.message);
-  }
-});
-
-$('stopBtn').addEventListener('click', async () => {
-  try {
-    const data = await api('/workflow/stop', { method: 'POST' });
-    if (data.status) {
-      statusData = data.status;
-      renderStatus();
-    }
-    scheduleStatusRefreshes();
-  } catch (err) {
-    toast(err.message);
-  }
-});
+$('startBtn').addEventListener('click', () => runAction('/workflow/start', {}));
+$('stopBtn').addEventListener('click', () => runAction('/workflow/stop'));
 
 /* ------------------------------------------------------------------ logs */
 function setLogs(lines) {
   logLines = lines.slice(-500);
+  queueLogRender();
+}
+
+function renderLogs() {
   const view = $('logView');
+  const atBottom = view.scrollHeight - view.scrollTop - view.clientHeight < 60;
   view.textContent = logLines.join('\n');
-  view.scrollTop = view.scrollHeight;
+  if (atBottom) view.scrollTop = view.scrollHeight;
+}
+
+function queueLogRender() {
+  if (activeTab !== 'logs' || document.hidden || logRenderTimer) return;
+  logRenderTimer = setTimeout(() => {
+    logRenderTimer = null;
+    renderLogs();
+  }, 150);
 }
 
 function appendLog(entry) {
   const line = (entry.time ? entry.time + '  ' : '') + (entry.message || '');
   logLines.push(line);
   if (logLines.length > 500) logLines.shift();
-  const view = $('logView');
-  view.textContent = logLines.join('\n');
-  view.scrollTop = view.scrollHeight;
+  queueLogRender();
 }
 
 /* --------------------------------------------------------------- reports */
@@ -350,65 +402,113 @@ $('modal').addEventListener('click', (event) => {
 });
 
 /* ------------------------------------------------------------- lifecycle */
-async function refreshStatus() {
-  try {
-    const wasRunning = !!statusData.running;
-    const data = await api('/status');
-    statusData = data.status || {};
-    renderStatus();
-    if (wasRunning && !statusData.running) refreshAll();
-  } catch (e) {
-    /* ignore */
-  }
+function connection(message) {
+  $('connectionText').textContent = message;
 }
 
-async function refreshAll() {
-  try {
-    const status = await api('/status');
-    statusData = status.status || {};
-    renderStatus();
+function refreshStatus() {
+  if (!token || document.hidden || actionPending) return Promise.resolve();
+  if (statusRequest) return statusRequest;
+  const currentSession = session;
+  const revision = statusRevision;
+  const request = (async () => {
+    try {
+      const data = await api('/status');
+      if (currentSession !== session || revision !== statusRevision) return;
+      statusData = data.status || {};
+      statusReady = true;
+      connection(es && es.readyState === 1 ? '已连接 · 实时同步' : '已连接 · 定时同步');
+      renderStatus();
+    } catch (err) {
+      if (currentSession !== session || revision !== statusRevision) return;
+      statusReady = false;
+      connection(err.message + ' · 将自动重试');
+      renderStatus();
+    }
+  })();
+  statusRequest = request;
+  request.finally(() => { if (statusRequest === request) statusRequest = null; });
+  return request;
+}
 
-    const logs = await api('/logs?limit=200');
-    setLogs((logs.lines || []).map((e) => (e.time ? e.time + '  ' : '') + (e.message || '')));
-
-    const list = await api('/reports?limit=30');
-    reports = list.reports || [];
-    renderReports();
-  } catch (err) {
-    toast(err.message);
-  }
+function refreshPanel(force = false) {
+  const tab = activeTab;
+  if (!token || document.hidden || tab === 'status') return Promise.resolve();
+  if (panelRequest) return panelRequest;
+  if (panelLoaded[tab] && !force) return Promise.resolve();
+  const currentSession = session;
+  const revision = panelRevision;
+  const request = (async () => {
+    try {
+      const data = await api(tab === 'logs' ? '/logs?limit=200' : '/reports?limit=30');
+      if (currentSession !== session) return;
+      // The fetched snapshot can precede a live report/clear event.
+      if (tab === 'reports' && revision !== panelRevision) return;
+      if (tab === 'logs') {
+        setLogs((data.lines || []).map((entry) => (entry.time ? entry.time + '  ' : '') + (entry.message || '')));
+      } else {
+        reports = data.reports || [];
+        renderReports();
+      }
+      panelLoaded[tab] = true;
+    } catch (err) {
+      if (currentSession === session) toast(err.message);
+    }
+  })();
+  panelRequest = request;
+  request.finally(() => {
+    if (panelRequest === request) {
+      panelRequest = null;
+      if (activeTab !== tab) refreshPanel();
+    }
+  });
+  return request;
 }
 
 function connectEvents() {
   disconnectEvents();
-  if (!token) return;
+  if (!token || document.hidden || !navigator.onLine) return;
+  const currentSession = session;
   try {
-    es = new EventSource(API + '/events?token=' + encodeURIComponent(token));
-    es.onmessage = (event) => {
+    const source = new EventSource(API + '/events?token=' + encodeURIComponent(token));
+    es = source;
+    lastEventAt = Date.now();
+    source.onmessage = (event) => {
+      if (source !== es || currentSession !== session) return;
+      lastEventAt = Date.now();
       let payload;
-      try {
-        payload = JSON.parse(event.data);
-      } catch (e) {
-        return;
-      }
+      try { payload = JSON.parse(event.data); } catch (e) { return; }
       const data = payload.data;
       if (payload.type === 'status' || payload.type === 'snapshot') {
+        statusRevision += 1;
         statusData = Object.assign({}, statusData, data || {});
+        statusReady = true;
+        connection('已连接 · 实时同步');
         renderStatus();
+        if (payload.type === 'snapshot') {
+          panelLoaded.logs = panelLoaded.reports = false;
+          refreshPanel(true);
+        }
       } else if (payload.type === 'log') {
         appendLog(data || {});
       } else if (payload.type === 'report') {
-        reports.unshift(data || {});
-        if (reports.length > 30) reports.pop();
-        renderReports();
-        toast('任务报告已生成 ' + ((data && data.status_label) || ''));
+        panelRevision += 1;
+        reports = [data, ...reports.filter((report) => report.id !== data.id)].slice(0, 30);
+        if (activeTab === 'reports') renderReports();
+        toast('任务报告已生成 ' + (data.status_label || ''));
       } else if (payload.type === 'reports_cleared') {
+        panelRevision += 1;
         reports = [];
         renderReports();
       }
     };
+    source.onerror = () => {
+      if (source !== es) return;
+      connection('实时连接中断，正在重连…');
+      refreshStatus();
+    };
   } catch (e) {
-    /* ignore */
+    connection('正在使用定时同步');
   }
 }
 
@@ -419,33 +519,55 @@ function disconnectEvents() {
   }
 }
 
+function resume() {
+  if (!token || document.hidden) return;
+  connection('正在连接电脑…');
+  refreshStatus();
+  refreshPanel(true);
+  connectEvents();
+}
+
+$('retryBtn').addEventListener('click', resume);
 document.addEventListener('visibilitychange', () => {
-  if (!document.hidden && token) refreshAll();
+  if (document.hidden) disconnectEvents();
+  else resume();
 });
+window.addEventListener('online', resume);
+window.addEventListener('offline', () => {
+  disconnectEvents();
+  statusReady = false;
+  connection('手机网络已断开，恢复后自动连接');
+  renderStatus();
+});
+window.addEventListener('pagehide', disconnectEvents);
+window.addEventListener('pageshow', (event) => { if (event.persisted) resume(); });
 
 async function init() {
-  if (token) {
-    try {
-      const me = await api('/account/me');
-      account = me.account || account;
-      showMain();
-      await refreshAll();
-      connectEvents();
-      return;
-    } catch (e) {
-      token = '';
-      localStorage.removeItem(TOKEN_KEY);
-    }
+  if (!token) { showAuth(); return; }
+  const currentSession = session;
+  // Show the cached shell immediately. Transient network failures keep the login.
+  showMain();
+  renderStatus();
+  resume();
+  try {
+    const me = await api('/account/me');
+    if (currentSession !== session) return;
+    account = me.account || account;
+    $('whoami').textContent = accountName();
+  } catch (err) {
+    if (currentSession === session && !statusReady) connection(err.message + ' · 将自动重试');
   }
-  showAuth();
 }
 
 if ('serviceWorker' in navigator) {
-  navigator.serviceWorker.register('/sw.js').catch(() => {});
+  navigator.serviceWorker.register('/sw.js', { updateViaCache: 'none' }).catch(() => {});
 }
 
 setInterval(() => {
-  if (token && !document.hidden) refreshStatus();
+  if (!token || document.hidden || !navigator.onLine) return;
+  if (!es || Date.now() - lastEventAt > 45000) connectEvents();
+  refreshStatus();
+  if (!es || es.readyState !== 1) refreshPanel(true);
 }, 10000);
 
 init();
