@@ -2,6 +2,19 @@
 # Release build: bundles a CLEAN default config (no secrets) so the shipped exe
 # contains no email authorization code. The installer also drops config.yaml
 # next to the exe, which takes priority over this bundled fallback.
+import os
+import sys
+from pathlib import Path
+
+# Build hosts can prepend unrelated native tools (libheif/poppler/etc.) to PATH.
+# Their older UCRT/API-set DLLs must not shadow Windows libraries during analysis.
+_windows = Path(os.environ.get("SystemRoot", r"C:\Windows"))
+os.environ["PATH"] = os.pathsep.join(str(p) for p in (
+    _windows / "System32", _windows,
+    Path(sys.base_prefix), Path(sys.base_prefix) / "Scripts",
+    Path(sys.prefix) / "Scripts",
+))
+
 from PyInstaller.utils.hooks import collect_all
 
 datas = [

@@ -19,7 +19,7 @@ from maagent.control.maaend import (
     press_hotkey,
 )
 from maagent.control.maaend_api import DEFAULT_PORT, MaaEndApi
-from maagent.control.popup import MaaPopupMonitor
+from maagent.control.maaend_popup import MaaEndPopupMonitor
 from maagent.control.process import close_maa, process_running, spawn
 from maagent.core.base import BaseWorkflow
 from maagent.report.generator import RunReport
@@ -100,7 +100,7 @@ class MaaEndOrchestrator(BaseWorkflow):
     ) -> None:
         super().__init__(config, stop_event)
         self.cfg = (config.get("adapters", {}) or {}).get("maaend", {}) or {}
-        self._popup_monitor: MaaPopupMonitor | None = None
+        self._popup_monitor: MaaEndPopupMonitor | None = None
         self._completion_confirmed = False
 
     def _game_name(self) -> str:
@@ -126,6 +126,9 @@ class MaaEndOrchestrator(BaseWorkflow):
     def _run(self, report: RunReport) -> None:
         cfg = self.cfg
         self._completion_confirmed = False
+        self._popup_monitor = MaaEndPopupMonitor(
+            debug_dir=(cfg.get("popup_debug_dir") or "logs/popups"),
+        )
         logger.info("=== 终末地 步骤 1/5: 打开 MaaEnd ===")
         launched = not process_running(PROCESS_NAME)
         launch_time = time.time()
@@ -146,10 +149,6 @@ class MaaEndOrchestrator(BaseWorkflow):
             report.errors.append("未找到 MaaEnd 实例")
             return
         logger.info("MaaEnd 实例: {}", instance_id)
-        self._popup_monitor = MaaPopupMonitor(
-            process_name=PROCESS_NAME,
-            debug_dir=(cfg.get("popup_debug_dir") or "logs/popups"),
-        )
         self._ensure_global_hotkeys(api)
         log_dir = cfg.get("log_dir")
         if launched and not self._wait_hotkeys(log_dir, 40, since=launch_time):
@@ -175,9 +174,13 @@ class MaaEndOrchestrator(BaseWorkflow):
             logger.warning("终末地：未确认整套任务完成，保留 MaaEnd 窗口，不自动关闭")
 
         logger.info("=== 终末地 步骤 4/5: 汇总日志并生成报告 ===")
+        if self._completion_confirmed:
+            self._dismiss_popups(foreground=True)
         time.sleep(2)
         entries = self._fetch_entries(api, instance_id, since)
         self._populate(report, entries, cfg.get("log_dir"))
+        if self._popup_monitor:
+            report.popups_closed.extend(self._popup_monitor.closed)
 
         if result == "timeout":
             report.status = "timeout"
@@ -286,7 +289,6 @@ class MaaEndOrchestrator(BaseWorkflow):
         the task is already running makes MaaEnd reject it with 「任务启动失败：
         任务已在运行」and can drop the controller connection, so we avoid it here.
         """
-        self._dismiss_popups()
         try:
             MaaEndUI().press_start()
         except Exception as e:
@@ -332,7 +334,6 @@ class MaaEndOrchestrator(BaseWorkflow):
         next_retry = time.time() + 40
         while time.time() < start_deadline:
             self._check_stop()
-            self._dismiss_popups()
             messages = self._new_messages(api, instance_id, since)
             try:
                 state_running = api.is_running(instance_id)
@@ -362,7 +363,6 @@ class MaaEndOrchestrator(BaseWorkflow):
         idle_polls = 0
         while time.time() < deadline:
             self._check_stop()
-            self._dismiss_popups()
             messages = self._new_messages(api, instance_id, since)
             try:
                 state_running = api.is_running(instance_id)
@@ -391,12 +391,12 @@ class MaaEndOrchestrator(BaseWorkflow):
                 return True
         return False
 
-    def _dismiss_popups(self) -> None:
-        """Dismiss MaaEnd popups (update prompts etc.) the same way we do for MAA."""
+    def _dismiss_popups(self, *, foreground: bool = False) -> None:
+        """Dismiss the recognized WebView update acknowledgement without closing MaaEnd."""
         if self._popup_monitor is None:
             return
         try:
-            self._popup_monitor.scan_once()
+            self._popup_monitor.scan_once(foreground=foreground)
         except Exception as e:
             logger.warning("终末地：弹窗处理异常: {}", e)
 

@@ -16,6 +16,7 @@ from maagent.control.bettergi import (
     BetterGiUI,
 )
 from maagent.control.bgi_weekly import apply_weekly as apply_bgi_weekly
+from maagent.control.bgi_popup import BgiPopupMonitor
 from maagent.control.process import close_maa, process_running, spawn
 from maagent.core.base import BaseWorkflow
 from maagent.report.generator import RunReport
@@ -31,7 +32,6 @@ _TASK_TOTAL_RE = re.compile(r"启用任务总数量[:：]\s*(\d+)")
 _TASK_PROGRESS_RE = re.compile(r"一条龙任务执行[:：]\s*(\d+)/(\d+)")
 _GROUP_LOAD_RE = re.compile(r'配置组\s*"([^"]+)"\s*加载完成，共(\d+)个脚本')
 _TASK_NAME_RE = re.compile(r'→ "([^"]+)"\s*开始')
-
 
 def parse_one_dragon_summary(lines: list[str]) -> dict[str, Any]:
     """从 BetterGI 主日志片段中提取「一条龙」任务的执行摘要。"""
@@ -136,7 +136,7 @@ class BetterGiOrchestrator(BaseWorkflow):
 
     maagent 只负责打开 BetterGI、点「启动」拉起原神、切到「一条龙」并点击开始
     三角按钮；之后 BetterGI 自己完成一条龙任务并在结束时自动关闭原神，maagent
-    通过日志（一条龙和配置组任务结束）与游戏进程退出判断完成，最后关闭 BetterGI。
+    通过日志（一条龙和配置组任务结束）确认完成，最后关闭 BetterGI。
 
     BetterGI 提权运行（需注入游戏），因此 maagent 也必须提权（--uac-admin）。
     """
@@ -152,6 +152,20 @@ class BetterGiOrchestrator(BaseWorkflow):
         self._tailer = LogTailer(self.cfg.get("log_dir"))
         self._lines: list[str] = []
         self._run_start: datetime | None = None
+        self._popup: BgiPopupMonitor | None = None
+
+    def _check_stop(self) -> None:
+        super()._check_stop()
+        if self._popup is not None:
+            self._popup.scan_once()
+
+    def _finish(self, report: RunReport, auto_close: bool = True) -> RunReport:
+        if self._popup is not None:
+            report.popups_closed.extend(self._popup.closed)
+            if self._popup.closed:
+                report.extra.append(("弹窗处理", f"已确认关闭 Multiple games 提示 {len(self._popup.closed)} 次"))
+            self._popup = None
+        return super()._finish(report, auto_close)
 
     def _game_name(self) -> str:
         return GAME_NAME
@@ -173,6 +187,7 @@ class BetterGiOrchestrator(BaseWorkflow):
     def _run(self, report: RunReport) -> None:
         cfg = self.cfg
         self._run_start = datetime.now()
+        self._popup = BgiPopupMonitor()
 
         logger.info("=== 原神 步骤 1/5: 打开 BetterGI ===")
         if not process_running(PROCESS_NAME):
@@ -242,6 +257,9 @@ class BetterGiOrchestrator(BaseWorkflow):
         elif result == "not_started":
             report.status = "failed"
             report.errors.append("一条龙任务未能启动")
+        elif result == "process_exited":
+            report.status = "failed"
+            report.errors.append("原神或 BetterGI 已退出，但未读到一条龙完成日志，无法确认任务完成")
         elif report.errors:
             report.status = "failed"
         elif report.warnings:
@@ -325,7 +343,7 @@ class BetterGiOrchestrator(BaseWorkflow):
     def _wait_done(self, timeout: float) -> str:
         deadline = time.time() + timeout
         running = False
-        saw_game = any(process_running(p) for p in GAME_PROCESSES)
+        exited_at: float | None = None
         while time.time() < deadline:
             self._check_stop()
             lines = self._tailer.read_new()
@@ -341,12 +359,14 @@ class BetterGiOrchestrator(BaseWorkflow):
             if any(k in joined for k in RUNNING_MARKERS):
                 running = True
             game_running = any(process_running(p) for p in GAME_PROCESSES)
-            if running and saw_game and not game_running:
-                # 任务结束 BetterGI 会关闭原神；日志尚未刷出结束标记时以此兜底。
-                logger.info("原神：游戏进程已退出，判定任务结束")
-                return "complete"
-            if game_running:
-                saw_game = True
+            if not game_running or not process_running(PROCESS_NAME):
+                # 留出日志落盘时间，但异常退出本身不能证明任务完成。
+                if exited_at is None:
+                    exited_at = time.monotonic()
+                elif time.monotonic() - exited_at >= 30:
+                    return "process_exited"
+            else:
+                exited_at = None
             time.sleep(5.0)
         return "not_started" if not running else "timeout"
 
@@ -382,6 +402,8 @@ class BetterGiOrchestrator(BaseWorkflow):
         return result
 
     def _populate(self, report: RunReport) -> None:
+        # 包括等待落盘期间的尾部记录；仍只读取本次运行新增的日志。
+        self._lines.extend(self._tailer.read_new())
         summary = parse_one_dragon_summary(self._lines)
         total = summary.get("total")
         progress = summary.get("progress")
