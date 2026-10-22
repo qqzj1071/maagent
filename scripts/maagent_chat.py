@@ -7,7 +7,6 @@ frozen. Config is read from next to the exe first, then the bundled copy.
 from __future__ import annotations
 
 import os
-import shutil
 import sys
 from pathlib import Path
 
@@ -20,16 +19,6 @@ def _base_dir() -> Path:
     if _frozen():
         return Path(sys.executable).resolve().parent
     return Path(__file__).resolve().parents[1]
-
-
-def _data_dir() -> Path:
-    if _frozen():
-        root = os.environ.get("LOCALAPPDATA") or str(Path.home())
-        d = Path(root) / "Maagent"
-    else:
-        d = _base_dir() / "config"
-    d.mkdir(parents=True, exist_ok=True)
-    return d
 
 
 def _find_config(base: Path) -> Path | None:
@@ -79,19 +68,9 @@ def main() -> int:
     from maagent.config import load_config
 
     cfg = load_config(config_path)
-    agent_cfg = cfg.setdefault("agent", {})
-    data = _data_dir()
-    if _frozen():
-        agent_cfg["memory_file"] = str(data / "agent_memory.json")
-        agent_cfg["catalog_file"] = str(data / "agent_item_catalog.json")
-        knowledge = data / "agent_knowledge.json"
-        bundled = Path(getattr(sys, "_MEIPASS", "")) / "config" / "agent_knowledge.json"
-        if not knowledge.exists() and bundled.is_file():
-            shutil.copyfile(bundled, knowledge)
-        if knowledge.exists():
-            agent_cfg["knowledge_file"] = str(knowledge)
-        # 截图等运行数据放到用户数据目录，避免散落在 exe 同目录（桌面）
-        agent_cfg.setdefault("game", {})["screenshot_dir"] = str(data / "screenshots")
+    from maagent.agent.storage import prepare_agent_storage
+
+    data = prepare_agent_storage(cfg)
 
     from loguru import logger
 

@@ -2,12 +2,52 @@ from __future__ import annotations
 
 import subprocess
 import time
+import io
 from pathlib import Path
 
 from loguru import logger
 from PIL import Image
+from maagent.agent.budget import remaining
 
-from maa.controller import AdbController
+
+
+class AdbGameController:
+    """Bounded ADB operations; no native controller connection wait in frozen apps."""
+
+    def __init__(self, adb_path, address, screenshot_dir=None):
+        self.adb_path, self.address = str(adb_path), address
+        self.screenshot_dir = Path(screenshot_dir) if screenshot_dir else None
+        self.resolution = (0, 0)
+
+    def _run(self, *args, binary=False):
+        result = subprocess.run([self.adb_path, '-s', self.address, *args],
+                                capture_output=True, timeout=remaining(25))
+        if result.returncode:
+            raise RuntimeError(result.stderr.decode('utf-8', errors='replace')[:300])
+        return result.stdout if binary else result.stdout.decode('utf-8', errors='replace')
+
+    def connect(self):
+        return self._run('get-state').strip() == 'device'
+
+    def screenshot(self, save=False):
+        image = Image.open(io.BytesIO(self._run('exec-out', 'screencap', '-p', binary=True))).convert('RGB')
+        self.resolution = image.size
+        if save and self.screenshot_dir:
+            self.screenshot_dir.mkdir(parents=True, exist_ok=True)
+            image.save(self.screenshot_dir / f'screen_{time.time_ns()}.png')
+        return image
+
+    def click(self, x, y):
+        self._run('shell', 'input', 'tap', str(int(x)), str(int(y)))
+
+    def swipe(self, x1, y1, x2, y2, duration=300):
+        self._run('shell', 'input', 'swipe', *map(str, map(int, (x1, y1, x2, y2, duration))))
+
+    def press_key(self, key):
+        self._run('shell', 'input', 'keyevent', str(int(key)))
+
+    def shell(self, cmd):
+        return self._run('shell', cmd)
 
 
 def _first_adb_serial(adb_path: str | Path, timeout: float = 30.0) -> str | None:
@@ -68,6 +108,7 @@ class MaaGameController:
     ) -> None:
         self.adb_path = str(adb_path)
         self.address = address
+        from maa.controller import AdbController
         self.controller = AdbController(self.adb_path, address)
         if screenshot_long_side:
             self.controller.set_screenshot_target_long_side(int(screenshot_long_side))

@@ -55,10 +55,14 @@ def fetch_page(title: str, timeout: float = 30.0) -> tuple[str, str, str]:
 def main() -> int:
     parser = argparse.ArgumentParser(description="构建 PRTS 知识库")
     parser.add_argument("--pages", nargs="*", default=None, help="要抓取的页面标题")
-    parser.add_argument("--out", default="config/agent_knowledge.json")
+    parser.add_argument("--out", default=None)
     args = parser.parse_args()
 
     pages = args.pages or DEFAULT_PAGES
+    from maagent.agent.storage import prepare_agent_storage
+    cfg = {}
+    prepare_agent_storage(cfg)
+    args.out = args.out or cfg["agent"]["knowledge_file"]
     kb = KnowledgeBase(args.out)
     total = 0
     for title in pages:

@@ -175,6 +175,13 @@ def _get_ocr():
     return _ocr_engine
 
 
+def recognize_line(image: Image.Image) -> tuple[str, float]:
+    """识别已定位的单行/数字，不再执行文字检测和方向旋转。"""
+    import numpy as np
+    result, _ = _get_ocr().text_rec([np.array(image.convert("RGB"))])
+    return (str(result[0][0]).strip(), float(result[0][1])) if result else ("", 0.0)
+
+
 def recognize(image: Image.Image) -> list[OcrItem]:
     try:
         import numpy as np

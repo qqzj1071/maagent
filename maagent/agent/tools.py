@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 from maagent.agent.memory import AgentMemory
+from maagent.agent.budget import remaining
 
 
 @dataclass
@@ -46,7 +47,10 @@ class ToolRegistry:
         if tool is None:
             return f"未知工具：{name}"
         try:
+            remaining()
             result = tool.func(**arguments)
+        except TimeoutError:
+            raise
         except Exception as e:
             return f"工具 {name} 执行失败：{e}"
         if isinstance(result, str):
@@ -148,7 +152,7 @@ def build_knowledge_tools(kb: Any) -> ToolRegistry:
         if not hits:
             return "知识库中没有找到相关内容。"
         return "\n\n".join(
-            f"【{h.get('title')}】\n{h.get('text')}\n（来源：{h.get('source')}）" for h in hits
+            f"【{h.get('title')}】\n{h.get('text')}\n（来源：{h.get('source')}；获取时间：{h.get('fetched_at') or h.get('created_at')}；修订：{h.get('revision_id', '旧记录未标注')}）" for h in hits
         )
 
     registry.register(Tool(
@@ -166,6 +170,17 @@ def build_knowledge_tools(kb: Any) -> ToolRegistry:
             "required": ["query"],
         },
         func=search_knowledge,
+    ))
+    from maagent.agent.prts import PrtsUpdater
+    registry.register(Tool(
+        name="update_prts_knowledge",
+        description="按博士指令从 prts.wiki 获取并持久化最新干员/敌人资料。指定 names 更新页面；不指定则每批更新分类中最多10页，传回 cursor 可继续。失败保留旧资料。",
+        parameters={"type": "object", "properties": {
+            "kind": {"type": "string", "enum": ["operator", "enemy"]},
+            "names": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 10},
+            "cursor": {"type": "string", "description": "上批返回的分类游标，首次留空"}
+        }, "required": ["kind"]},
+        func=PrtsUpdater(kb).update,
     ))
     return registry
 
@@ -187,12 +202,6 @@ def build_game_tools(service: Any) -> ToolRegistry:
 
     def get_operator_training(name: str) -> str:
         return service.get_operator_training(name)
-
-    def get_warehouse_inventory() -> str:
-        return service.get_warehouse_inventory()
-
-    def build_item_catalog() -> str:
-        return service.build_item_catalog()
 
     def get_item_quantity(name: str) -> str:
         return service.get_item_quantity(name)
@@ -282,29 +291,36 @@ def build_game_tools(service: Any) -> ToolRegistry:
         },
         func=get_operator_training,
     ))
+    from maagent.agent.item_icons import import_prts
     registry.register(Tool(
-        name="get_warehouse_inventory",
-        description=(
-            "清点仓库里的养成材料与物品：自动进入仓库，逐个读取每种物品的名称和数量并汇总"
-            "（如博士问『仓库里有什么』『我还有多少龙门币/源石』『统计一下我的材料』）。"
-        ),
-        parameters={"type": "object", "properties": {}},
-        func=get_warehouse_inventory,
+        name="learn_item_icon",
+        description="仅在博士明确要求寻找/学习某物品图标时，从PRTS对应物品页面下载有名称证据的图片并存入图标库。查询库存遇到未知图标时禁止自动调用，先告知博士。",
+        parameters={"type":"object","properties":{"name":{"type":"string"}},"required":["name"]},
+        func=lambda name: import_prts(name, service.catalog_file),
     ))
     registry.register(Tool(
-        name="build_item_catalog",
-        description=(
-            "清点仓库并记住每种物品的图标与名称对应关系（建立图标目录），供之后快速按名称查询数量。"
-            "当博士说『记住仓库里的物品』『认一下我的材料图标』时使用。"
-        ),
-        parameters={"type": "object", "properties": {}},
-        func=build_item_catalog,
+        name="check_item_icon",
+        description="只检查本地图标库是否认识物品，不操作游戏；不认识就报告，等待博士授权学习图标。",
+        parameters={"type":"object","properties":{"name":{"type":"string"}},"required":["name"]},
+        func=service.check_item_icon,
+    ))
+    registry.register(Tool(
+        name="get_item_earliest_expiry",
+        description="查询最早到期物品批次与数量；理智药/体力药明确作为统称时会同时比较浓缩液和加强剂。完整扫描全部范围，只点目标核对数量和日期。",
+        parameters={"type":"object","properties":{"name":{"type":"string"}},"required":["name"]},
+        func=service.get_item_earliest_expiry,
+    ))
+    registry.register(Tool(
+        name="get_item_latest_expiry",
+        description="查询已知物品到期最晚批次的过期时间；在全部范围只打开匹配图标，核对图标数量与详情库存，完整查找后比较各批日期。",
+        parameters={"type":"object","properties":{"name":{"type":"string"}},"required":["name"]},
+        func=service.get_item_latest_expiry,
     ))
     registry.register(Tool(
         name="get_item_quantity",
         description=(
             "按名称查询仓库中某种物品的数量（如『我还有多少龙门币』『固源岩有多少』）。"
-            "会直接定位对应图标读取数量，无需逐个清点。"
+            "先读目标图标数量，再点击核对详情名称、右上角库存及过期时间；不一致立即报告。"
         ),
         parameters={
             "type": "object",

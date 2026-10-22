@@ -137,12 +137,16 @@ def fetch_operator(title: str) -> str:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="构建干员知识库")
-    parser.add_argument("--out", default="config/agent_knowledge.json")
+    parser.add_argument("--out", default=None)
     parser.add_argument("--limit", type=int, default=0, help="只抓前 N 个（调试用）")
     parser.add_argument("--sleep", type=float, default=1.0)
     parser.add_argument("--refresh", action="store_true", help="重抓已存在的干员")
     args = parser.parse_args()
 
+    from maagent.agent.storage import prepare_agent_storage
+    cfg = {}
+    prepare_agent_storage(cfg)
+    args.out = args.out or cfg["agent"]["knowledge_file"]
     kb = KnowledgeBase(args.out)
     existing = set(kb.docs())
     titles = list_operators()

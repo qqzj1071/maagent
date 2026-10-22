@@ -10,6 +10,7 @@ from typing import Any
 
 import requests
 from loguru import logger
+from maagent.agent.budget import remaining
 
 
 class LLMError(RuntimeError):
@@ -57,7 +58,7 @@ class OpenAICompatLLM:
         vision_model: str | None = None,
         temperature: float = 0.7,
         timeout: float = 90.0,
-        max_retries: int = 6,
+        max_retries: int = 2,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
@@ -66,6 +67,7 @@ class OpenAICompatLLM:
         self.temperature = temperature
         self.timeout = timeout
         self.max_retries = max_retries
+        self.session = requests.Session()
 
     def _retry_delay(self, attempt: int, resp: requests.Response | None) -> float:
         if resp is not None:
@@ -87,12 +89,13 @@ class OpenAICompatLLM:
         for attempt in range(1, self.max_retries + 1):
             resp: requests.Response | None = None
             try:
-                resp = requests.post(url, headers=headers, json=payload, timeout=self.timeout)
+                resp = self.session.post(url, headers=headers, json=payload, timeout=remaining(min(self.timeout, 45)))
             except requests.RequestException as e:
                 last = e
                 delay = self._retry_delay(attempt, None)
                 logger.warning("LLM 请求失败（第 {} 次），{}s 后重试: {}", attempt, delay, e)
-                time.sleep(delay)
+                if attempt < self.max_retries:
+                    time.sleep(min(delay, remaining()))
                 continue
             if resp.status_code == 200:
                 return resp.json()
@@ -101,7 +104,8 @@ class OpenAICompatLLM:
                 last = LLMError(f"HTTP {resp.status_code}: {detail}")
                 delay = self._retry_delay(attempt, resp)
                 logger.warning("LLM 返回 {}（第 {} 次），{}s 后重试", resp.status_code, attempt, delay)
-                time.sleep(delay)
+                if attempt < self.max_retries:
+                    time.sleep(min(delay, remaining()))
                 continue
             raise LLMError(f"HTTP {resp.status_code}: {detail}")
         raise LLMError(f"LLM 请求失败: {last}")
@@ -121,7 +125,9 @@ class OpenAICompatLLM:
         if tools:
             payload["tools"] = tools
             payload["tool_choice"] = "auto"
+        started = time.monotonic()
         data = self._post(payload)
+        logger.info("LLM {} 耗时 {:.2f}s", payload["model"], time.monotonic()-started)
         choices = data.get("choices") or [{}]
         message = choices[0].get("message") or {}
         calls: list[ToolCall] = []
