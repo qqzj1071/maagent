@@ -19,8 +19,6 @@ PROCESS_NAME = "BetterGI.exe"
 # 原神（国服 / 国际服）进程；任务完成后由 BetterGI 自动关闭。
 GAME_PROCESSES = ("YuanShen.exe", "GenshinImpact.exe")
 
-# 主界面「启动」按钮（首页右侧的大按钮，精确匹配以免误点左侧边栏的同名导航项）
-START_LABELS = ("启动",)
 # 左侧边栏「一条龙」栏目（OCR 定位）
 ONEDRAGON_LABELS = ("一条龙",)
 # 一条龙任务列表右侧的「开始」三角按钮。图标没有文字，先尝试 OCR 这些标签，
@@ -28,8 +26,6 @@ ONEDRAGON_LABELS = ("一条龙",)
 TASK_START_LABELS = ("一键执行", "开始", "执行")
 
 DEFAULT_REGIONS = {
-    # 主界面「启动」按钮搜索区域（首页右侧；排除左侧边栏的「启动」导航项）
-    "start": (0.45, 0.0, 1.0, 1.0),
     # 左侧边栏「一条龙」栏目搜索区域
     "one_dragon": (0.0, 0.0, 0.40, 1.0),
     # 任务列表右侧「开始」三角按钮区域
@@ -182,9 +178,6 @@ class BetterGiUI:
         except Exception as e:
             logger.warning("BetterGI：点击任务开始按钮失败: {}", e)
             return False
-
-    def click_start_game(self) -> bool:
-        return self.click_label(START_LABELS, "start", exact=True)
 
     def click_one_dragon(self) -> bool:
         return self.click_label(ONEDRAGON_LABELS, "one_dragon")

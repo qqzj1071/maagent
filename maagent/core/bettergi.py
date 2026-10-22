@@ -134,14 +134,16 @@ class LogTailer:
 class BetterGiOrchestrator(BaseWorkflow):
     """Runs 原神 dailies by driving BetterGI (更好的原神).
 
-    maagent 只负责打开 BetterGI、点「启动」拉起原神、切到「一条龙」并点击开始
-    三角按钮；之后 BetterGI 自己完成一条龙任务并在结束时自动关闭原神，maagent
-    通过日志（一条龙和配置组任务结束）确认完成，最后关闭 BetterGI。
+    maagent 只负责打开 BetterGI、按周常日程调整一条龙配置、切到「一条龙」并点击
+    开始三角按钮；原神由 BetterGI 的一条龙流程自行拉起（不要在主页点「启动」，
+    否则会再拉起第二个原神导致 Multiple games 弹窗）。任务结束时 BetterGI 自动
+    关闭原神，maagent 通过日志（一条龙和配置组任务结束）确认完成，最后关闭
+    BetterGI。
 
     BetterGI 提权运行（需注入游戏），因此 maagent 也必须提权（--uac-admin）。
     """
 
-    steps = 5
+    steps = 4
 
     def __init__(
         self, config: dict[str, Any], stop_event: threading.Event | None = None
@@ -189,7 +191,7 @@ class BetterGiOrchestrator(BaseWorkflow):
         self._run_start = datetime.now()
         self._popup = BgiPopupMonitor()
 
-        logger.info("=== 原神 步骤 1/5: 打开 BetterGI ===")
+        logger.info("=== 原神 步骤 1/4: 打开 BetterGI ===")
         if not process_running(PROCESS_NAME):
             logger.info("BetterGI 未运行，正在启动...")
             if not self._launch():
@@ -205,22 +207,7 @@ class BetterGiOrchestrator(BaseWorkflow):
         logger.info("BetterGI 主窗口已就绪，等待 {} 秒加载...", settle)
         self._wait_stop(settle)
 
-        logger.info("=== 原神 步骤 2/5: 点击「启动」拉起原神 ===")
-        game_running = any(process_running(p) for p in GAME_PROCESSES)
-        if not game_running:
-            if not self._click_start_game(float(cfg.get("start_click_timeout", 60))):
-                report.status = "failed"
-                report.errors.append("未能点击 BetterGI 的「启动」按钮")
-                return
-            if not self._wait_game(float(cfg.get("game_start_timeout", 300))):
-                report.status = "failed"
-                report.errors.append("原神进程未启动")
-                return
-        else:
-            logger.info("原神已在运行，跳过「启动」")
-        self._check_stop()
-
-        logger.info("=== 原神 步骤 3/5: 切换到「一条龙」并点击开始 ===")
+        logger.info("=== 原神 步骤 2/4: 切换到「一条龙」并点击开始 ===")
         # 周常：在点「一条龙」前按日程勾选/取消勾选各配置组（凌晨 4 点为游戏日分界）
         try:
             weekly_cfg = (cfg.get("weekly") or {})
@@ -238,10 +225,10 @@ class BetterGiOrchestrator(BaseWorkflow):
             report.errors.append("未能点击「一条龙」任务开始按钮")
             return
 
-        logger.info("=== 原神 步骤 4/5: 等待一条龙任务完成 ===")
+        logger.info("=== 原神 步骤 3/4: 等待一条龙任务完成 ===")
         result = self._wait_done(float(cfg.get("task_timeout_seconds", 3600)))
 
-        logger.info("=== 原神 步骤 5/5: 汇总日志并生成报告 ===")
+        logger.info("=== 原神 步骤 4/4: 汇总日志并生成报告 ===")
         # 等最后一批脚本的 ExecutionRecords 落盘，避免漏读
         time.sleep(2)
         self._populate(report)
@@ -294,33 +281,6 @@ class BetterGiOrchestrator(BaseWorkflow):
         while time.time() < deadline:
             self._check_stop()
             time.sleep(min(1.0, max(0.0, deadline - time.time())))
-
-    def _click_start_game(self, timeout: float) -> bool:
-        """点「启动」并确认原神进程已拉起（点击后短暂观察，未拉起则重试）。"""
-        deadline = time.time() + timeout
-        while time.time() < deadline:
-            self._check_stop()
-            if any(process_running(p) for p in GAME_PROCESSES):
-                return True
-            if self._ui.click_start_game():
-                # 点击成功，给原神一点启动时间；若始终没起来则回到外层重新点
-                wait = time.time() + 15
-                while time.time() < wait:
-                    self._check_stop()
-                    if any(process_running(p) for p in GAME_PROCESSES):
-                        return True
-                    time.sleep(2.0)
-            time.sleep(3.0)
-        return False
-
-    def _wait_game(self, timeout: float) -> bool:
-        deadline = time.time() + timeout
-        while time.time() < deadline:
-            self._check_stop()
-            if any(process_running(p) for p in GAME_PROCESSES):
-                return True
-            time.sleep(5.0)
-        return False
 
     def _click_one_dragon(self, timeout: float) -> bool:
         deadline = time.time() + timeout
